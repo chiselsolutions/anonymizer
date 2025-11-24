@@ -11,6 +11,8 @@ import {
   RotateCcw,
   ChevronLeft,
   ChevronRight,
+  Type,
+  Edit3,
 } from "lucide-react";
 import axios from "axios";
 
@@ -26,6 +28,12 @@ export default function PDFAnonymizer() {
   const [showBoxes, setShowBoxes] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isAnonymized, setIsAnonymized] = useState(false);
+
+  // New states for text replacement
+  const [textReplacements, setTextReplacements] = useState([]);
+  const [isTextMode, setIsTextMode] = useState(false);
+  const [editingReplacement, setEditingReplacement] = useState(null);
+  const [replacementText, setReplacementText] = useState("");
 
   const canvasRef = useRef(null);
   const overlayCanvasRef = useRef(null);
@@ -62,8 +70,11 @@ export default function PDFAnonymizer() {
 
     setPdfFile(file);
     setBoxes([]);
+    setTextReplacements([]);
     setCurrentPage(1);
     setIsAnonymized(false);
+    setIsTextMode(false);
+    setEditingReplacement(null);
 
     const arrayBuffer = await file.arrayBuffer();
     const typedArray = new Uint8Array(arrayBuffer);
@@ -117,9 +128,18 @@ export default function PDFAnonymizer() {
   // Mouse down - start drawing
   const handleMouseDown = (e) => {
     if (isAnonymized) return;
+
     const pos = getMousePos(e);
-    setIsDrawing(true);
-    setStartPoint(pos);
+
+    if (isTextMode) {
+      // In text mode, create a text replacement area
+      setIsDrawing(true);
+      setStartPoint(pos);
+    } else {
+      // In redaction mode (original functionality)
+      setIsDrawing(true);
+      setStartPoint(pos);
+    }
   };
 
   // Mouse move - update current box
@@ -127,13 +147,28 @@ export default function PDFAnonymizer() {
     if (!isDrawing || isAnonymized) return;
 
     const pos = getMousePos(e);
-    setCurrentBox({
-      x: Math.min(startPoint.x, pos.x),
-      y: Math.min(startPoint.y, pos.y),
-      width: Math.abs(pos.x - startPoint.x),
-      height: Math.abs(pos.y - startPoint.y),
-      page: currentPage,
-    });
+
+    if (isTextMode) {
+      // For text replacement area
+      setCurrentBox({
+        x: Math.min(startPoint.x, pos.x),
+        y: Math.min(startPoint.y, pos.y),
+        width: Math.abs(pos.x - startPoint.x),
+        height: Math.abs(pos.y - startPoint.y),
+        page: currentPage,
+        type: "text",
+      });
+    } else {
+      // For redaction box (original functionality)
+      setCurrentBox({
+        x: Math.min(startPoint.x, pos.x),
+        y: Math.min(startPoint.y, pos.y),
+        width: Math.abs(pos.x - startPoint.x),
+        height: Math.abs(pos.y - startPoint.y),
+        page: currentPage,
+        type: "redaction",
+      });
+    }
   };
 
   // Mouse up - finish drawing
@@ -147,10 +182,18 @@ export default function PDFAnonymizer() {
       width: Math.abs(pos.x - startPoint.x),
       height: Math.abs(pos.y - startPoint.y),
       page: currentPage,
+      type: isTextMode ? "text" : "redaction",
     };
 
     if (box.width > 5 && box.height > 5) {
-      setBoxes([...boxes, box]);
+      if (isTextMode) {
+        // For text replacement, open edit dialog
+        setEditingReplacement(box);
+        setReplacementText("");
+      } else {
+        // For redaction, add to boxes (original functionality)
+        setBoxes([...boxes, box]);
+      }
     }
 
     setIsDrawing(false);
@@ -158,9 +201,66 @@ export default function PDFAnonymizer() {
     setCurrentBox(null);
   };
 
+  // Calculate dynamic font size based on box dimensions and text length
+  const calculateFontSize = (text, boxWidth, boxHeight) => {
+    if (!text) return 12;
+
+    const minFontSize = 8;
+    const maxFontSize = 36;
+
+    // Estimate character width (approximate)
+    const avgCharWidth = 0.6;
+    const textLength = text.length;
+
+    // Calculate maximum font size that fits the width
+    const widthBasedSize = (boxWidth / (textLength * avgCharWidth)) * 2;
+
+    // Calculate maximum font size that fits the height
+    const heightBasedSize = boxHeight * 0.8; // 80% of box height
+
+    // Use the smaller of the two to ensure text fits both dimensions
+    let fontSize = Math.min(widthBasedSize, heightBasedSize);
+
+    // Clamp between min and max
+    fontSize = Math.max(minFontSize, Math.min(maxFontSize, fontSize));
+
+    return Math.floor(fontSize);
+  };
+
+  // Save text replacement
+  const saveTextReplacement = () => {
+    if (!replacementText.trim() || !editingReplacement) return;
+
+    const newReplacement = {
+      ...editingReplacement,
+      id: Date.now(),
+      text: replacementText,
+      fontSize: calculateFontSize(
+        replacementText,
+        editingReplacement.width,
+        editingReplacement.height
+      ),
+    };
+
+    setTextReplacements([...textReplacements, newReplacement]);
+    setEditingReplacement(null);
+    setReplacementText("");
+  };
+
+  // Edit existing text replacement
+  const editTextReplacement = (replacement) => {
+    setEditingReplacement(replacement);
+    setReplacementText(replacement.text);
+  };
+
+  // Delete text replacement
+  const deleteTextReplacement = (id) => {
+    setTextReplacements(textReplacements.filter((tr) => tr.id !== id));
+  };
+
   // Apply anonymization
   const applyAnonymization = () => {
-    if (boxes.length === 0) {
+    if (boxes.length === 0 && textReplacements.length === 0) {
       alert("Please draw some boxes first");
       return;
     }
@@ -194,13 +294,35 @@ export default function PDFAnonymizer() {
     context.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 
     if (isAnonymized) {
+      // Draw redaction boxes (black out completely)
       context.fillStyle = "rgb(0, 0, 0)";
       boxes
         .filter((box) => box.page === currentPage)
         .forEach((box) => {
           context.fillRect(box.x, box.y, box.width, box.height);
         });
+
+      // Draw text replacements (white background with black text - no black box)
+      textReplacements
+        .filter((tr) => tr.page === currentPage)
+        .forEach((tr) => {
+          // Draw white background
+          context.fillStyle = "rgb(255, 255, 255)";
+          context.fillRect(tr.x, tr.y, tr.width, tr.height);
+
+          // Draw black text with dynamic font size and centered
+          context.fillStyle = "rgb(0, 0, 0)";
+          context.font = `${tr.fontSize || 12}px Arial`;
+          context.textBaseline = "middle";
+          context.textAlign = "center";
+
+          const textX = tr.x + tr.width / 2;
+          const textY = tr.y + tr.height / 2;
+
+          context.fillText(tr.text, textX, textY);
+        });
     } else if (showBoxes) {
+      // Draw redaction boxes (original functionality - semi-transparent)
       context.fillStyle = "rgba(0, 0, 0, 0.7)";
       context.strokeStyle = "red";
       context.lineWidth = 2;
@@ -212,7 +334,40 @@ export default function PDFAnonymizer() {
           context.strokeRect(box.x, box.y, box.width, box.height);
         });
 
+      // Draw text replacement areas (semi-transparent green)
+      context.fillStyle = "rgba(0, 100, 0, 0.5)";
+      context.strokeStyle = "green";
+      context.lineWidth = 2;
+
+      textReplacements
+        .filter((tr) => tr.page === currentPage)
+        .forEach((tr) => {
+          context.fillRect(tr.x, tr.y, tr.width, tr.height);
+          context.strokeRect(tr.x, tr.y, tr.width, tr.height);
+
+          // Draw text preview with dynamic font size and centered
+          context.fillStyle = "rgb(255, 255, 255)";
+          context.font = `${tr.fontSize || 12}px Arial`;
+          context.textBaseline = "middle";
+          context.textAlign = "center";
+
+          const textX = tr.x + tr.width / 2;
+          const textY = tr.y + tr.height / 2;
+
+          context.fillText(tr.text, textX, textY);
+          context.fillStyle = "rgba(0, 100, 0, 0.5)";
+        });
+
+      // Draw current box (while drawing)
       if (currentBox) {
+        if (currentBox.type === "text") {
+          context.fillStyle = "rgba(0, 100, 0, 0.5)";
+          context.strokeStyle = "green";
+        } else {
+          context.fillStyle = "rgba(0, 0, 0, 0.7)";
+          context.strokeStyle = "red";
+        }
+
         context.fillRect(
           currentBox.x,
           currentBox.y,
@@ -227,11 +382,19 @@ export default function PDFAnonymizer() {
         );
       }
     }
-  }, [boxes, currentBox, currentPage, showBoxes, isAnonymized, pdfFile]);
+  }, [
+    boxes,
+    textReplacements,
+    currentBox,
+    currentPage,
+    showBoxes,
+    isAnonymized,
+    pdfFile,
+  ]);
 
   // Generate anonymized PDF
   const generateAnonymizedPDF = async () => {
-    if (!pdfFile || boxes.length === 0) {
+    if (!pdfFile || (boxes.length === 0 && textReplacements.length === 0)) {
       alert("Please upload a PDF and draw boxes to anonymize");
       return;
     }
@@ -262,6 +425,14 @@ export default function PDFAnonymizer() {
         boxesByPage[box.page].push(box);
       });
 
+      const textReplacementsByPage = {};
+      textReplacements.forEach((tr) => {
+        if (!textReplacementsByPage[tr.page]) {
+          textReplacementsByPage[tr.page] = [];
+        }
+        textReplacementsByPage[tr.page].push(tr);
+      });
+
       for (const [pageNum, pageBoxes] of Object.entries(boxesByPage)) {
         const page = pages[parseInt(pageNum) - 1];
         const { height } = page.getSize();
@@ -282,6 +453,52 @@ export default function PDFAnonymizer() {
             width: pdfWidth,
             height: pdfHeight,
             color: rgb(0, 0, 0),
+          });
+        });
+      }
+
+      // Handle text replacements
+      for (const [pageNum, pageTextReplacements] of Object.entries(
+        textReplacementsByPage
+      )) {
+        const page = pages[parseInt(pageNum) - 1];
+        const { height, width } = page.getSize();
+
+        pageTextReplacements.forEach((tr) => {
+          const pdfX = tr.x * (width / canvasRef.current.width);
+          const pdfY =
+            height -
+            tr.y * (height / canvasRef.current.height) -
+            tr.height * (height / canvasRef.current.height);
+          const pdfWidth = tr.width * (width / canvasRef.current.width);
+          const pdfHeight = tr.height * (height / canvasRef.current.height);
+
+          // Draw white background for text replacement
+          page.drawRectangle({
+            x: pdfX,
+            y: pdfY,
+            width: pdfWidth,
+            height: pdfHeight,
+            color: rgb(1, 1, 1), // White background
+          });
+
+          // Calculate PDF font size (convert from canvas pixels to PDF points)
+          const pdfFontSize =
+            (tr.fontSize || 12) * (height / canvasRef.current.height);
+
+          // Calculate text position - FIXED: Proper centering in PDF coordinate system
+          // const textPdfX = pdfX + pdfWidth / 2;
+          // const textPdfY = pdfY + pdfHeight / 2 - pdfFontSize * 0.3; // Adjust for baseline
+
+          page.drawText(tr.text, {
+            x: pdfX,
+            y: pdfY + pdfHeight - pdfFontSize, // approximate top alignment
+            size: pdfFontSize,
+            color: rgb(0, 0, 0), // Black text
+            lineHeight: 1,
+            maxWidth: pdfWidth - 4, // Small padding
+            wordBreaks: [" "],
+            textAlign: "center", // Ensure center alignment in PDF
           });
         });
       }
@@ -305,18 +522,8 @@ export default function PDFAnonymizer() {
     }
   };
 
-  const clearBoxes = () => {
-    setBoxes([]);
-    setIsAnonymized(false);
-  };
-
-  const clearCurrentPage = () => {
-    setBoxes(boxes.filter((box) => box.page !== currentPage));
-    setIsAnonymized(false);
-  };
-
   const uploadAnonymizedPDF = async () => {
-    if (!pdfFile || boxes.length === 0) {
+    if (!pdfFile || (boxes.length === 0 && textReplacements.length === 0)) {
       alert("Please upload a PDF and draw boxes to anonymize");
       return;
     }
@@ -324,7 +531,6 @@ export default function PDFAnonymizer() {
     setIsProcessing(true);
 
     try {
-      // Step 1: Load pdf-lib library
       const pdfLibScript = document.createElement("script");
       pdfLibScript.src =
         "https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js";
@@ -336,12 +542,10 @@ export default function PDFAnonymizer() {
 
       const { PDFDocument, rgb } = window.PDFLib;
 
-      // Step 2: Load the original PDF
       const arrayBuffer = await pdfFile.arrayBuffer();
       const pdfDoc = await PDFDocument.load(arrayBuffer);
       const pages = pdfDoc.getPages();
 
-      // Step 3: Organize boxes by page
       const boxesByPage = {};
       boxes.forEach((box) => {
         if (!boxesByPage[box.page]) {
@@ -350,7 +554,14 @@ export default function PDFAnonymizer() {
         boxesByPage[box.page].push(box);
       });
 
-      // Step 4: Draw black rectangles on each page
+      const textReplacementsByPage = {};
+      textReplacements.forEach((tr) => {
+        if (!textReplacementsByPage[tr.page]) {
+          textReplacementsByPage[tr.page] = [];
+        }
+        textReplacementsByPage[tr.page].push(tr);
+      });
+
       for (const [pageNum, pageBoxes] of Object.entries(boxesByPage)) {
         const page = pages[parseInt(pageNum) - 1];
         const { height } = page.getSize();
@@ -375,31 +586,70 @@ export default function PDFAnonymizer() {
         });
       }
 
-      // Step 5: Generate the anonymized PDF bytes
-      const pdfBytes = await pdfDoc.save();
+      // Handle text replacements for upload
+      for (const [pageNum, pageTextReplacements] of Object.entries(
+        textReplacementsByPage
+      )) {
+        const page = pages[parseInt(pageNum) - 1];
+        const { height, width } = page.getSize();
 
-      // Step 6: Create FormData for API upload
+        pageTextReplacements.forEach((tr) => {
+          const pdfX = tr.x * (width / canvasRef.current.width);
+          const pdfY =
+            height -
+            tr.y * (height / canvasRef.current.height) -
+            tr.height * (height / canvasRef.current.height);
+          const pdfWidth = tr.width * (width / canvasRef.current.width);
+          const pdfHeight = tr.height * (height / canvasRef.current.height);
+
+          // White background for text replacement
+          page.drawRectangle({
+            x: pdfX,
+            y: pdfY,
+            width: pdfWidth,
+            height: pdfHeight,
+            color: rgb(1, 1, 1),
+          });
+
+          // Calculate PDF font size
+          const pdfFontSize =
+            (tr.fontSize || 12) * (height / canvasRef.current.height);
+
+          // Calculate text position - FIXED: Proper centering
+          // const textPdfX = pdfX + pdfWidth / 2;
+          // const textPdfY = pdfY + pdfHeight / 2 - pdfFontSize * 0.3; // Adjust for baseline
+
+          page.drawText(tr.text, {
+            x: pdfX,
+            y: pdfY + pdfHeight - pdfFontSize, // approximate top alignment
+            size: pdfFontSize,
+            color: rgb(0, 0, 0),
+            lineHeight: 1,
+            maxWidth: pdfWidth - 4,
+            wordBreaks: [" "],
+            textAlign: "center", // Ensure center alignment
+          });
+        });
+      }
+
+      const pdfBytes = await pdfDoc.save();
       const formData = new FormData();
       const pdfBlob = new Blob([pdfBytes], { type: "application/pdf" });
       const anonymizedFilename =
         "anonymized_" + (pdfFile.name || "document.pdf");
 
       formData.append("file", pdfBlob, anonymizedFilename);
-      // Add any other metadata you need
 
-      // Step 7: Upload to your API
       const response = await axios.post(
         `${import.meta.env.VITE_BACKEND_URL}/api/analytics/upload-text-file/`,
         formData,
         {
           headers: {
             "x-api-key": import.meta.env.VITE_API_KEY,
-            // DO NOT set Content-Type → Axios handles it for FormData
           },
         }
       );
 
-      // Step 8: Handle response
       if (!response.data) {
         throw new Error(`Upload failed: ${response.statusText}`);
       }
@@ -409,10 +659,27 @@ export default function PDFAnonymizer() {
       document.body.removeChild(pdfLibScript);
     } catch (error) {
       console.error("Error uploading PDF:", error);
-      // alert("Error uploading anonymized PDF: " + error.message);
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  const clearBoxes = () => {
+    setBoxes([]);
+    setTextReplacements([]);
+    setIsAnonymized(false);
+  };
+
+  const clearCurrentPage = () => {
+    setBoxes(boxes.filter((box) => box.page !== currentPage));
+    setTextReplacements(
+      textReplacements.filter((tr) => tr.page !== currentPage)
+    );
+    setIsAnonymized(false);
+  };
+
+  const toggleMode = () => {
+    setIsTextMode(!isTextMode);
   };
 
   return (
@@ -424,7 +691,8 @@ export default function PDFAnonymizer() {
             Tax Anonymizer
           </h1>
           <p className="text-gray-400 mb-6">
-            Upload a PDF and draw boxes to redact sensitive information
+            Upload a PDF and draw boxes to redact sensitive information or
+            replace text
           </p>
 
           <div className="mb-6">
@@ -448,28 +716,21 @@ export default function PDFAnonymizer() {
 
           {pdfFile && (
             <>
-              <div className="flex flex-wrap gap-3 mb-6">
-                <button
-                  onClick={() => changePage(currentPage - 1)}
-                  disabled={currentPage === 1}
-                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors"
-                >
-                  <ChevronLeft />
-                </button>
-
-                <div className="px-4 py-2 bg-gray-700 text-white rounded flex items-center gap-2">
-                  <span className="text-sm">
-                    Page {currentPage} of {totalPages}
-                  </span>
-                </div>
-
-                <button
-                  onClick={() => changePage(currentPage + 1)}
-                  disabled={currentPage === totalPages}
-                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors"
-                >
-                  <ChevronRight />
-                </button>
+              <div className="flex flex-wrap gap-3 mb-3 items-center">
+                {/* Mode Toggle - Hidden when in Anonymize Preview */}
+                {!isAnonymized && (
+                  <button
+                    onClick={toggleMode}
+                    className={`px-4 py-2 rounded transition-colors flex items-center gap-2 ${
+                      isTextMode
+                        ? "bg-green-600 hover:bg-green-700"
+                        : "bg-red-600 hover:bg-red-700"
+                    } text-white`}
+                  >
+                    <Type size={18} />
+                    {isTextMode ? "Text Replace Mode" : "Redaction Mode"}
+                  </button>
+                )}
 
                 {!isAnonymized && (
                   <button
@@ -496,7 +757,7 @@ export default function PDFAnonymizer() {
                       className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors flex items-center gap-2"
                     >
                       <Trash2 size={18} />
-                      Clear All ({boxes.length})
+                      Clear All ({boxes.length + textReplacements.length})
                     </button>
                   </>
                 )}
@@ -504,7 +765,9 @@ export default function PDFAnonymizer() {
                 {!isAnonymized ? (
                   <button
                     onClick={applyAnonymization}
-                    disabled={boxes.length === 0}
+                    disabled={
+                      boxes.length === 0 && textReplacements.length === 0
+                    }
                     className="px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2 ml-auto"
                   >
                     <ShieldCheck size={18} />
@@ -522,7 +785,10 @@ export default function PDFAnonymizer() {
 
                 <button
                   onClick={generateAnonymizedPDF}
-                  disabled={boxes.length === 0 || isProcessing}
+                  disabled={
+                    (boxes.length === 0 && textReplacements.length === 0) ||
+                    isProcessing
+                  }
                   className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
                 >
                   <Download size={18} />
@@ -531,7 +797,10 @@ export default function PDFAnonymizer() {
 
                 <button
                   onClick={uploadAnonymizedPDF}
-                  disabled={boxes.length === 0 || isProcessing}
+                  disabled={
+                    (boxes.length === 0 && textReplacements.length === 0) ||
+                    isProcessing
+                  }
                   className="px-4 py-2 bg-red-400 text-white rounded hover:bg-red-500 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
                 >
                   <UploadIcon size={18} />
@@ -539,11 +808,81 @@ export default function PDFAnonymizer() {
                 </button>
               </div>
 
+              {/* PAGE NAVIGATION ROW — NEW LINE, RIGHT ALIGNED */}
+              <div className="flex justify-end gap-3 mb-6">
+                <button
+                  onClick={() => changePage(currentPage - 1)}
+                  disabled={currentPage === 1}
+                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors"
+                >
+                  <ChevronLeft />
+                </button>
+
+                <div className="px-4 py-2 bg-gray-700 text-white rounded flex items-center gap-2">
+                  <span className="text-sm">
+                    Page {currentPage} of {totalPages}
+                  </span>
+                </div>
+
+                <button
+                  onClick={() => changePage(currentPage + 1)}
+                  disabled={currentPage === totalPages}
+                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors"
+                >
+                  <ChevronRight />
+                </button>
+              </div>
+
+              {/* Text Replacements List */}
+              {textReplacements.filter((tr) => tr.page === currentPage).length >
+                0 && (
+                <div className="bg-gray-700 border border-gray-600 rounded-lg p-4 mb-4">
+                  <h3 className="text-white font-semibold mb-2 flex items-center gap-2">
+                    <Type size={18} />
+                    Text Replacements on This Page:
+                  </h3>
+                  <div className="space-y-2">
+                    {textReplacements
+                      .filter((tr) => tr.page === currentPage)
+                      .map((tr) => (
+                        <div
+                          key={tr.id}
+                          className="flex items-center justify-between bg-gray-600 p-2 rounded"
+                        >
+                          <div className="flex-1">
+                            <span className="text-white text-sm">
+                              &quot;{tr.text}&quot;
+                            </span>
+                            <span className="text-gray-400 text-xs ml-2">
+                              (Size: {tr.fontSize}px)
+                            </span>
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => editTextReplacement(tr)}
+                              className="px-2 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm"
+                            >
+                              <Edit3 size={14} />
+                            </button>
+                            <button
+                              onClick={() => deleteTextReplacement(tr.id)}
+                              className="px-2 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-sm"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
+
               {isAnonymized && (
                 <div className="bg-yellow-900 border border-yellow-600 rounded-lg p-4 mb-6">
                   <p className="text-yellow-200 font-semibold flex items-center gap-2">
                     <ShieldCheck size={20} />
-                    Anonymized Preview Active - All marked areas are now hidden
+                    Anonymized Preview Active - All marked areas are now
+                    hidden/replaced
                   </p>
                 </div>
               )}
@@ -551,19 +890,44 @@ export default function PDFAnonymizer() {
               <div className="bg-gray-700 border border-gray-600 rounded-lg p-4 mb-6">
                 <h3 className="text-white font-semibold mb-2">Instructions:</h3>
                 <ul className="text-gray-300 text-sm space-y-1 list-disc list-inside">
-                  <li>Click and drag on the PDF to draw redaction boxes</li>
+                  <li>
+                    {!isAnonymized ? (
+                      <span
+                        className={`font-semibold ${
+                          isTextMode ? "text-green-400" : "text-red-400"
+                        }`}
+                      >
+                        Current Mode:{" "}
+                        {isTextMode ? "Text Replacement" : "Redaction"}
+                      </span>
+                    ) : (
+                      <span className="text-yellow-400 font-semibold">
+                        Preview Mode: Viewing final anonymized version
+                      </span>
+                    )}
+                  </li>
+                  {!isAnonymized && (
+                    <>
+                      <li>
+                        {isTextMode
+                          ? "Click and drag to select text area, then enter replacement text"
+                          : "Click and drag on the PDF to draw redaction boxes"}
+                      </li>
+                      <li>
+                        Toggle between Redaction and Text Replace modes using
+                        the button
+                      </li>
+                    </>
+                  )}
                   <li>
                     Navigate between pages to mark content throughout the
                     document
                   </li>
                   <li>
-                    Click &quot;Anonymize Preview&quot; to see how the final
-                    document will look
+                    Click &quot;Anonymize Preview&quot; to see how the final document will
+                    look
                   </li>
-                  <li>
-                    Click &quot;Download PDF&quot; to save the anonymized
-                    version
-                  </li>
+                  <li>Click &quot;Download PDF&quot; to save the anonymized version</li>
                 </ul>
               </div>
 
@@ -607,17 +971,60 @@ export default function PDFAnonymizer() {
                 {isAnonymized ? (
                   <span className="text-yellow-400 font-semibold">
                     Viewing anonymized version -{" "}
-                    {boxes.filter((b) => b.page === currentPage).length} area(s)
-                    redacted on this page
+                    {boxes.filter((b) => b.page === currentPage).length}{" "}
+                    redaction(s) and{" "}
+                    {
+                      textReplacements.filter((tr) => tr.page === currentPage)
+                        .length
+                    }{" "}
+                    text replacement(s) on this page
                   </span>
                 ) : (
                   <span>
                     {boxes.filter((b) => b.page === currentPage).length}{" "}
-                    redaction box(es) on this page
+                    redaction box(es) and{" "}
+                    {
+                      textReplacements.filter((tr) => tr.page === currentPage)
+                        .length
+                    }{" "}
+                    text replacement(s) on this page
                   </span>
                 )}
               </div>
             </>
+          )}
+
+          {/* Text Replacement Modal - Updated backdrop */}
+          {editingReplacement && (
+            <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+              <div className="bg-gray-800 p-6 rounded-lg border border-gray-600 w-96 max-w-full shadow-xl">
+                <h3 className="text-white text-lg font-semibold mb-4">
+                  Enter Replacement Text
+                </h3>
+                <textarea
+                  value={replacementText}
+                  onChange={(e) => setReplacementText(e.target.value)}
+                  placeholder="Enter text to replace the selected area..."
+                  className="w-full h-32 p-3 bg-gray-700 text-white border border-gray-600 rounded mb-4 resize-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  autoFocus
+                />
+                <div className="flex gap-3 justify-end">
+                  <button
+                    onClick={() => setEditingReplacement(null)}
+                    className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={saveTextReplacement}
+                    disabled={!replacementText.trim()}
+                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors"
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </div>
       </div>
