@@ -15,6 +15,7 @@ import {
   Edit3,
 } from "lucide-react";
 import axios from "axios";
+import { toast } from "react-toastify";
 
 export default function PDFAnonymizer() {
   const [pdfFile, setPdfFile] = useState(null);
@@ -31,7 +32,7 @@ export default function PDFAnonymizer() {
 
   // New states for text replacement
   const [textReplacements, setTextReplacements] = useState([]);
-  const [isTextMode, setIsTextMode] = useState(false);
+  const [isTextMode, setIsTextMode] = useState(true);
   const [editingReplacement, setEditingReplacement] = useState(null);
   const [replacementText, setReplacementText] = useState("");
 
@@ -73,7 +74,7 @@ export default function PDFAnonymizer() {
     setTextReplacements([]);
     setCurrentPage(1);
     setIsAnonymized(false);
-    setIsTextMode(false);
+    // setIsTextMode(false);
     setEditingReplacement(null);
 
     const arrayBuffer = await file.arrayBuffer();
@@ -231,26 +232,49 @@ export default function PDFAnonymizer() {
   const saveTextReplacement = () => {
     if (!replacementText.trim() || !editingReplacement) return;
 
-    const newReplacement = {
-      ...editingReplacement,
-      id: Date.now(),
-      text: replacementText,
-      fontSize: calculateFontSize(
-        replacementText,
-        editingReplacement.width,
-        editingReplacement.height
-      ),
-    };
+    // Check if we're editing an existing replacement (has id) or creating a new one
+    if (editingReplacement.id) {
+      // Update existing text replacement
+      setTextReplacements(
+        textReplacements.map((tr) =>
+          tr.id === editingReplacement.id
+            ? {
+                ...tr,
+                text: replacementText,
+                fontSize: calculateFontSize(
+                  replacementText,
+                  editingReplacement.width,
+                  editingReplacement.height
+                ),
+              }
+            : tr
+        )
+      );
+    } else {
+      // Create new text replacement
+      const newReplacement = {
+        ...editingReplacement,
+        id: Date.now(),
+        text: replacementText,
+        fontSize: calculateFontSize(
+          replacementText,
+          editingReplacement.width,
+          editingReplacement.height
+        ),
+      };
+      setTextReplacements([...textReplacements, newReplacement]);
+    }
 
-    setTextReplacements([...textReplacements, newReplacement]);
     setEditingReplacement(null);
     setReplacementText("");
+    setIsAnonymized(true);
   };
 
   // Edit existing text replacement
   const editTextReplacement = (replacement) => {
     setEditingReplacement(replacement);
     setReplacementText(replacement.text);
+    setIsAnonymized(false); // Allow editing by going back to normal view
   };
 
   // Delete text replacement
@@ -642,23 +666,28 @@ export default function PDFAnonymizer() {
 
       const response = await axios.post(
         `${import.meta.env.VITE_BACKEND_URL}/api/analytics/upload-text-file/`,
-        formData,
-        {
-          headers: {
-            "x-api-key": import.meta.env.VITE_API_KEY,
-          },
-        }
+        formData
+        // {
+        //   headers: {
+        //     "x-api-key": import.meta.env.VITE_API_KEY,
+        //   },
+        // }
       );
 
       if (!response.data) {
         throw new Error(`Upload failed: ${response.statusText}`);
       }
 
-      const result = await response.json();
+      const result = await response.data;
       console.log("Upload successful:", result);
+      toast.success("PDF uploaded successfully!", { position: "bottom-right" });
       document.body.removeChild(pdfLibScript);
     } catch (error) {
       console.error("Error uploading PDF:", error);
+      toast.error(
+        "There was some issue in uploading PDF. Please try again later.",
+        { position: "bottom-right" }
+      );
     } finally {
       setIsProcessing(false);
     }
@@ -681,7 +710,7 @@ export default function PDFAnonymizer() {
   const toggleMode = () => {
     setIsTextMode(!isTextMode);
   };
-
+  console.log("text mode", isTextMode);
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 p-8">
       <div className="max-w-7xl mx-auto">
@@ -716,280 +745,295 @@ export default function PDFAnonymizer() {
 
           {pdfFile && (
             <>
-              <div className="flex flex-wrap gap-3 mb-3 items-center">
-                {/* Mode Toggle - Hidden when in Anonymize Preview */}
-                {!isAnonymized && (
-                  <button
-                    onClick={toggleMode}
-                    className={`px-4 py-2 rounded transition-colors flex items-center gap-2 ${
-                      isTextMode
-                        ? "bg-green-600 hover:bg-green-700"
-                        : "bg-red-600 hover:bg-red-700"
-                    } text-white`}
-                  >
-                    <Type size={18} />
-                    {isTextMode ? "Text Replace Mode" : "Redaction Mode"}
-                  </button>
-                )}
-
-                {!isAnonymized && (
-                  <button
-                    onClick={() => setShowBoxes(!showBoxes)}
-                    className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 transition-colors flex items-center gap-2"
-                  >
-                    {showBoxes ? <EyeOff size={18} /> : <Eye size={18} />}
-                    {showBoxes ? "Hide" : "Show"} Boxes
-                  </button>
-                )}
-
-                {!isAnonymized && (
-                  <>
+              <div className="flex flex-col md:flex-row gap-6">
+                <div className="flex flex-col w-full md:w-50 flex-shrink-0 gap-2">
+                  {/* Mode Toggle - Hidden when in Anonymize Preview */}
+                  {!isAnonymized && (
                     <button
-                      onClick={clearCurrentPage}
-                      className="px-4 py-2 bg-orange-600 text-white rounded hover:bg-orange-700 transition-colors flex items-center gap-2"
+                      onClick={toggleMode}
+                      className={`px-4 py-2 rounded transition-colors flex items-center gap-2 ${
+                        isTextMode
+                          ? "bg-green-600 hover:bg-green-700"
+                          : "bg-red-600 hover:bg-red-700"
+                      } text-white`}
                     >
-                      <Trash2 size={18} />
-                      Clear Page
+                      <Type size={18} />
+                      {isTextMode ? "Text Replace Mode" : "Redaction Mode"}
                     </button>
+                  )}
 
+                  {!isAnonymized && (
                     <button
-                      onClick={clearBoxes}
-                      className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors flex items-center gap-2"
+                      onClick={() => setShowBoxes(!showBoxes)}
+                      className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 transition-colors flex items-center gap-2"
                     >
-                      <Trash2 size={18} />
-                      Clear All ({boxes.length + textReplacements.length})
+                      {showBoxes ? <EyeOff size={18} /> : <Eye size={18} />}
+                      {showBoxes ? "Hide" : "Show"} Boxes
                     </button>
-                  </>
-                )}
+                  )}
 
-                {!isAnonymized ? (
-                  <button
-                    onClick={applyAnonymization}
-                    disabled={
-                      boxes.length === 0 && textReplacements.length === 0
-                    }
-                    className="px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2 ml-auto"
-                  >
-                    <ShieldCheck size={18} />
-                    Anonymize Preview
-                  </button>
-                ) : (
-                  <button
-                    onClick={resetToOriginal}
-                    className="px-4 py-2 bg-cyan-600 text-white rounded hover:bg-cyan-700 transition-colors flex items-center gap-2 ml-auto"
-                  >
-                    <RotateCcw size={18} />
-                    Reset to Original
-                  </button>
-                )}
-
-                <button
-                  onClick={generateAnonymizedPDF}
-                  disabled={
-                    (boxes.length === 0 && textReplacements.length === 0) ||
-                    isProcessing
-                  }
-                  className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
-                >
-                  <Download size={18} />
-                  {isProcessing ? "Processing..." : "Download PDF"}
-                </button>
-
-                <button
-                  onClick={uploadAnonymizedPDF}
-                  disabled={
-                    (boxes.length === 0 && textReplacements.length === 0) ||
-                    isProcessing
-                  }
-                  className="px-4 py-2 bg-red-400 text-white rounded hover:bg-red-500 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
-                >
-                  <UploadIcon size={18} />
-                  {isProcessing ? "Processing..." : "Upload PDF"}
-                </button>
-              </div>
-
-              {/* PAGE NAVIGATION ROW — NEW LINE, RIGHT ALIGNED */}
-              <div className="flex justify-end gap-3 mb-6">
-                <button
-                  onClick={() => changePage(currentPage - 1)}
-                  disabled={currentPage === 1}
-                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors"
-                >
-                  <ChevronLeft />
-                </button>
-
-                <div className="px-4 py-2 bg-gray-700 text-white rounded flex items-center gap-2">
-                  <span className="text-sm">
-                    Page {currentPage} of {totalPages}
-                  </span>
-                </div>
-
-                <button
-                  onClick={() => changePage(currentPage + 1)}
-                  disabled={currentPage === totalPages}
-                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors"
-                >
-                  <ChevronRight />
-                </button>
-              </div>
-
-              {/* Text Replacements List */}
-              {textReplacements.filter((tr) => tr.page === currentPage).length >
-                0 && (
-                <div className="bg-gray-700 border border-gray-600 rounded-lg p-4 mb-4">
-                  <h3 className="text-white font-semibold mb-2 flex items-center gap-2">
-                    <Type size={18} />
-                    Text Replacements on This Page:
-                  </h3>
-                  <div className="space-y-2">
-                    {textReplacements
-                      .filter((tr) => tr.page === currentPage)
-                      .map((tr) => (
-                        <div
-                          key={tr.id}
-                          className="flex items-center justify-between bg-gray-600 p-2 rounded"
-                        >
-                          <div className="flex-1">
-                            <span className="text-white text-sm">
-                              &quot;{tr.text}&quot;
-                            </span>
-                            <span className="text-gray-400 text-xs ml-2">
-                              (Size: {tr.fontSize}px)
-                            </span>
-                          </div>
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => editTextReplacement(tr)}
-                              className="px-2 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm"
-                            >
-                              <Edit3 size={14} />
-                            </button>
-                            <button
-                              onClick={() => deleteTextReplacement(tr.id)}
-                              className="px-2 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-sm"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                  </div>
-                </div>
-              )}
-
-              {isAnonymized && (
-                <div className="bg-yellow-900 border border-yellow-600 rounded-lg p-4 mb-6">
-                  <p className="text-yellow-200 font-semibold flex items-center gap-2">
-                    <ShieldCheck size={20} />
-                    Anonymized Preview Active - All marked areas are now
-                    hidden/replaced
-                  </p>
-                </div>
-              )}
-
-              <div className="bg-gray-700 border border-gray-600 rounded-lg p-4 mb-6">
-                <h3 className="text-white font-semibold mb-2">Instructions:</h3>
-                <ul className="text-gray-300 text-sm space-y-1 list-disc list-inside">
-                  <li>
-                    {!isAnonymized ? (
-                      <span
-                        className={`font-semibold ${
-                          isTextMode ? "text-green-400" : "text-red-400"
-                        }`}
-                      >
-                        Current Mode:{" "}
-                        {isTextMode ? "Text Replacement" : "Redaction"}
-                      </span>
-                    ) : (
-                      <span className="text-yellow-400 font-semibold">
-                        Preview Mode: Viewing final anonymized version
-                      </span>
-                    )}
-                  </li>
                   {!isAnonymized && (
                     <>
-                      <li>
-                        {isTextMode
-                          ? "Click and drag to select text area, then enter replacement text"
-                          : "Click and drag on the PDF to draw redaction boxes"}
-                      </li>
-                      <li>
-                        Toggle between Redaction and Text Replace modes using
-                        the button
-                      </li>
+                      <button
+                        onClick={clearCurrentPage}
+                        className="px-4 py-2 bg-orange-600 text-white rounded hover:bg-orange-700 transition-colors flex items-center gap-2"
+                      >
+                        <Trash2 size={18} />
+                        Clear Page
+                      </button>
+
+                      <button
+                        onClick={clearBoxes}
+                        className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors flex items-center gap-2"
+                      >
+                        <Trash2 size={18} />
+                        Clear All ({boxes.length + textReplacements.length})
+                      </button>
                     </>
                   )}
-                  <li>
-                    Navigate between pages to mark content throughout the
-                    document
-                  </li>
-                  <li>
-                    Click &quot;Anonymize Preview&quot; to see how the final document will
-                    look
-                  </li>
-                  <li>Click &quot;Download PDF&quot; to save the anonymized version</li>
-                </ul>
-              </div>
 
-              <div
-                ref={containerRef}
-                className="border-2 border-gray-600 rounded-lg overflow-auto bg-gray-900 flex justify-center items-start p-4"
-                style={{ maxHeight: "70vh" }}
-              >
-                <div style={{ position: "relative", display: "inline-block" }}>
-                  <canvas
-                    ref={canvasRef}
-                    className="shadow-lg"
-                    style={{
-                      maxWidth: "100%",
-                      height: "auto",
-                      display: "block",
-                    }}
-                  />
-                  <canvas
-                    ref={overlayCanvasRef}
-                    onMouseDown={handleMouseDown}
-                    onMouseMove={handleMouseMove}
-                    onMouseUp={handleMouseUp}
-                    onMouseLeave={handleMouseUp}
-                    className={
-                      isAnonymized ? "shadow-lg" : "cursor-crosshair shadow-lg"
+                  {!isAnonymized ? (
+                    <button
+                      onClick={applyAnonymization}
+                      disabled={
+                        boxes.length === 0 && textReplacements.length === 0
+                      }
+                      className="px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+                    >
+                      <ShieldCheck size={18} />
+                      Anonymize Preview
+                    </button>
+                  ) : (
+                    <button
+                      onClick={resetToOriginal}
+                      className="px-4 py-2 bg-cyan-600 text-white rounded hover:bg-cyan-700 transition-colors flex items-center gap-2"
+                    >
+                      <RotateCcw size={18} />
+                      Reset to Original
+                    </button>
+                  )}
+
+                  <button
+                    onClick={generateAnonymizedPDF}
+                    disabled={
+                      (boxes.length === 0 && textReplacements.length === 0) ||
+                      isProcessing
                     }
-                    style={{
-                      position: "absolute",
-                      top: 0,
-                      left: 0,
-                      maxWidth: "100%",
-                      height: "auto",
-                      pointerEvents: isAnonymized ? "none" : "auto",
-                    }}
-                  />
-                </div>
-              </div>
+                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+                  >
+                    <Download size={18} />
+                    {isProcessing ? "Processing..." : "Download PDF"}
+                  </button>
 
-              <div className="mt-4 text-center text-gray-400 text-sm">
-                {isAnonymized ? (
-                  <span className="text-yellow-400 font-semibold">
-                    Viewing anonymized version -{" "}
-                    {boxes.filter((b) => b.page === currentPage).length}{" "}
-                    redaction(s) and{" "}
-                    {
-                      textReplacements.filter((tr) => tr.page === currentPage)
-                        .length
-                    }{" "}
-                    text replacement(s) on this page
-                  </span>
-                ) : (
-                  <span>
-                    {boxes.filter((b) => b.page === currentPage).length}{" "}
-                    redaction box(es) and{" "}
-                    {
-                      textReplacements.filter((tr) => tr.page === currentPage)
-                        .length
-                    }{" "}
-                    text replacement(s) on this page
-                  </span>
-                )}
+                  <button
+                    onClick={uploadAnonymizedPDF}
+                    disabled={
+                      (boxes.length === 0 && textReplacements.length === 0) ||
+                      isProcessing
+                    }
+                    className="px-4 py-2 bg-red-400 text-white rounded hover:bg-red-500 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+                  >
+                    <UploadIcon size={18} />
+                    {isProcessing ? "Processing..." : "Upload PDF"}
+                  </button>
+
+                  {/* PAGE NAVIGATION ROW — NEW LINE, RIGHT ALIGNED */}
+                  <div className="flex justify-end gap-3 mb-6">
+                    <button
+                      onClick={() => changePage(currentPage - 1)}
+                      disabled={currentPage === 1}
+                      className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors"
+                    >
+                      <ChevronLeft size={18} />
+                    </button>
+
+                    <div className="px-2 py-2 bg-gray-700 text-white rounded flex items-center gap-2">
+                      <span className="text-xs">
+                        Page {currentPage} of {totalPages}
+                      </span>
+                    </div>
+
+                    <button
+                      onClick={() => changePage(currentPage + 1)}
+                      disabled={currentPage === totalPages}
+                      className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors"
+                    >
+                      <ChevronRight size={18} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex-1">
+                  {/* Text Replacements List */}
+                  {textReplacements.filter((tr) => tr.page === currentPage)
+                    .length > 0 && (
+                    <div className="bg-gray-700 border border-gray-600 rounded-lg p-4 mb-4">
+                      <h3 className="text-white font-semibold mb-2 flex items-center gap-2">
+                        <Type size={18} />
+                        Text Replacements on This Page:
+                      </h3>
+                      <div className="space-y-2">
+                        {textReplacements
+                          .filter((tr) => tr.page === currentPage)
+                          .map((tr) => (
+                            <div
+                              key={tr.id}
+                              className="flex items-center justify-between bg-gray-600 p-2 rounded"
+                            >
+                              <div className="flex-1">
+                                <span className="text-white text-sm">
+                                  &quot;{tr.text}&quot;
+                                </span>
+                                <span className="text-gray-400 text-xs ml-2">
+                                  (Size: {tr.fontSize}px)
+                                </span>
+                              </div>
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => editTextReplacement(tr)}
+                                  className="px-2 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm"
+                                >
+                                  <Edit3 size={14} />
+                                </button>
+                                <button
+                                  onClick={() => deleteTextReplacement(tr.id)}
+                                  className="px-2 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-sm"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {isAnonymized && (
+                    <div className="bg-yellow-900 border border-yellow-600 rounded-lg p-2 mb-6">
+                      <p className="text-yellow-200 font-semibold text-sm flex items-center gap-2">
+                        <ShieldCheck size={18} />
+                        Anonymized Preview Active - All marked areas are now
+                        hidden/replaced
+                      </p>
+                    </div>
+                  )}
+
+                  <div
+                    ref={containerRef}
+                    className="border-2 border-gray-600 rounded-lg overflow-auto bg-gray-900 flex justify-center items-start p-4"
+                    style={{ maxHeight: "70vh" }}
+                  >
+                    <div
+                      style={{ position: "relative", display: "inline-block" }}
+                    >
+                      <canvas
+                        ref={canvasRef}
+                        className="shadow-lg"
+                        style={{
+                          maxWidth: "100%",
+                          height: "auto",
+                          display: "block",
+                        }}
+                      />
+                      <canvas
+                        ref={overlayCanvasRef}
+                        onMouseDown={handleMouseDown}
+                        onMouseMove={handleMouseMove}
+                        onMouseUp={handleMouseUp}
+                        onMouseLeave={handleMouseUp}
+                        className={
+                          isAnonymized
+                            ? "shadow-lg"
+                            : "cursor-crosshair shadow-lg"
+                        }
+                        style={{
+                          position: "absolute",
+                          top: 0,
+                          left: 0,
+                          maxWidth: "100%",
+                          height: "auto",
+                          pointerEvents: isAnonymized ? "none" : "auto",
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="mt-4 text-center text-gray-400 text-sm">
+                    {isAnonymized ? (
+                      <span className="text-yellow-400 font-semibold">
+                        Viewing anonymized version -{" "}
+                        {boxes.filter((b) => b.page === currentPage).length}{" "}
+                        redaction(s) and{" "}
+                        {
+                          textReplacements.filter(
+                            (tr) => tr.page === currentPage
+                          ).length
+                        }{" "}
+                        text replacement(s) on this page
+                      </span>
+                    ) : (
+                      <span>
+                        {boxes.filter((b) => b.page === currentPage).length}{" "}
+                        redaction box(es) and{" "}
+                        {
+                          textReplacements.filter(
+                            (tr) => tr.page === currentPage
+                          ).length
+                        }{" "}
+                        text replacement(s) on this page
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="bg-gray-700 border border-gray-600 rounded-lg p-4 mb-3 mt-3">
+                    <h3 className="text-white font-semibold mb-2">
+                      Instructions:
+                    </h3>
+                    <ul className="text-gray-300 text-sm space-y-1 list-disc list-inside">
+                      <li>
+                        {!isAnonymized ? (
+                          <span
+                            className={`font-semibold ${
+                              isTextMode ? "text-green-400" : "text-red-400"
+                            }`}
+                          >
+                            Current Mode:{" "}
+                            {isTextMode ? "Text Replacement" : "Redaction"}
+                          </span>
+                        ) : (
+                          <span className="text-yellow-400 font-semibold">
+                            Preview Mode: Viewing final anonymized version
+                          </span>
+                        )}
+                      </li>
+                      {!isAnonymized && (
+                        <>
+                          <li>
+                            {isTextMode
+                              ? "Click and drag to select text area, then enter replacement text"
+                              : "Click and drag on the PDF to draw redaction boxes"}
+                          </li>
+                          <li>
+                            Toggle between Redaction and Text Replace modes
+                            using the button
+                          </li>
+                        </>
+                      )}
+                      <li>
+                        Navigate between pages to mark content throughout the
+                        document
+                      </li>
+                      <li>
+                        Click &quot;Anonymize Preview&quot; to see how the final
+                        document will look
+                      </li>
+                      <li>
+                        Click &quot;Download PDF&quot; to save the anonymized
+                        version
+                      </li>
+                    </ul>
+                  </div>
+                </div>
               </div>
             </>
           )}
