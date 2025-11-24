@@ -5,14 +5,10 @@ import {
   UploadIcon,
   Trash2,
   Square,
-  Eye,
-  EyeOff,
-  ShieldCheck,
-  RotateCcw,
   ChevronLeft,
   ChevronRight,
-  Type,
   Edit3,
+  X,
 } from "lucide-react";
 import axios from "axios";
 import { toast } from "react-toastify";
@@ -21,19 +17,14 @@ export default function PDFAnonymizer() {
   const [pdfFile, setPdfFile] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(0);
-  const [boxes, setBoxes] = useState([]);
+  const [boxes, setBoxes] = useState([]); // All boxes (both redactions and text replacements)
   const [isDrawing, setIsDrawing] = useState(false);
   const [startPoint, setStartPoint] = useState(null);
   const [currentBox, setCurrentBox] = useState(null);
-  const [scale, setScale] = useState(1);
-  const [showBoxes, setShowBoxes] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isAnonymized, setIsAnonymized] = useState(false);
 
-  // New states for text replacement
-  const [textReplacements, setTextReplacements] = useState([]);
-  const [isTextMode, setIsTextMode] = useState(true);
-  const [editingReplacement, setEditingReplacement] = useState(null);
+  // Text replacement modal
+  const [editingBox, setEditingBox] = useState(null);
   const [replacementText, setReplacementText] = useState("");
 
   const canvasRef = useRef(null);
@@ -71,11 +62,8 @@ export default function PDFAnonymizer() {
 
     setPdfFile(file);
     setBoxes([]);
-    setTextReplacements([]);
     setCurrentPage(1);
-    setIsAnonymized(false);
-    // setIsTextMode(false);
-    setEditingReplacement(null);
+    setEditingBox(null);
 
     const arrayBuffer = await file.arrayBuffer();
     const typedArray = new Uint8Array(arrayBuffer);
@@ -91,7 +79,7 @@ export default function PDFAnonymizer() {
   // Render PDF page
   const renderPage = async (pdf, pageNum) => {
     const page = await pdf.getPage(pageNum);
-    const viewport = page.getViewport({ scale: scale });
+    const viewport = page.getViewport({ scale: 1 });
 
     const canvas = canvasRef.current;
     const context = canvas.getContext("2d");
@@ -128,53 +116,28 @@ export default function PDFAnonymizer() {
 
   // Mouse down - start drawing
   const handleMouseDown = (e) => {
-    if (isAnonymized) return;
-
     const pos = getMousePos(e);
-
-    if (isTextMode) {
-      // In text mode, create a text replacement area
-      setIsDrawing(true);
-      setStartPoint(pos);
-    } else {
-      // In redaction mode (original functionality)
-      setIsDrawing(true);
-      setStartPoint(pos);
-    }
+    setIsDrawing(true);
+    setStartPoint(pos);
   };
 
   // Mouse move - update current box
   const handleMouseMove = (e) => {
-    if (!isDrawing || isAnonymized) return;
+    if (!isDrawing) return;
 
     const pos = getMousePos(e);
-
-    if (isTextMode) {
-      // For text replacement area
-      setCurrentBox({
-        x: Math.min(startPoint.x, pos.x),
-        y: Math.min(startPoint.y, pos.y),
-        width: Math.abs(pos.x - startPoint.x),
-        height: Math.abs(pos.y - startPoint.y),
-        page: currentPage,
-        type: "text",
-      });
-    } else {
-      // For redaction box (original functionality)
-      setCurrentBox({
-        x: Math.min(startPoint.x, pos.x),
-        y: Math.min(startPoint.y, pos.y),
-        width: Math.abs(pos.x - startPoint.x),
-        height: Math.abs(pos.y - startPoint.y),
-        page: currentPage,
-        type: "redaction",
-      });
-    }
+    setCurrentBox({
+      x: Math.min(startPoint.x, pos.x),
+      y: Math.min(startPoint.y, pos.y),
+      width: Math.abs(pos.x - startPoint.x),
+      height: Math.abs(pos.y - startPoint.y),
+      page: currentPage,
+    });
   };
 
   // Mouse up - finish drawing
   const handleMouseUp = (e) => {
-    if (!isDrawing || isAnonymized) return;
+    if (!isDrawing) return;
 
     const pos = getMousePos(e);
     const box = {
@@ -183,18 +146,14 @@ export default function PDFAnonymizer() {
       width: Math.abs(pos.x - startPoint.x),
       height: Math.abs(pos.y - startPoint.y),
       page: currentPage,
-      type: isTextMode ? "text" : "redaction",
+      id: Date.now(),
+      text: "", // Empty means redaction (black box)
     };
 
     if (box.width > 5 && box.height > 5) {
-      if (isTextMode) {
-        // For text replacement, open edit dialog
-        setEditingReplacement(box);
-        setReplacementText("");
-      } else {
-        // For redaction, add to boxes (original functionality)
-        setBoxes([...boxes, box]);
-      }
+      // Open modal to ask for replacement text
+      setEditingBox(box);
+      setReplacementText("");
     }
 
     setIsDrawing(false);
@@ -208,92 +167,55 @@ export default function PDFAnonymizer() {
 
     const minFontSize = 8;
     const maxFontSize = 36;
-
-    // Estimate character width (approximate)
     const avgCharWidth = 0.6;
     const textLength = text.length;
 
-    // Calculate maximum font size that fits the width
     const widthBasedSize = (boxWidth / (textLength * avgCharWidth)) * 2;
+    const heightBasedSize = boxHeight * 0.8;
 
-    // Calculate maximum font size that fits the height
-    const heightBasedSize = boxHeight * 0.8; // 80% of box height
-
-    // Use the smaller of the two to ensure text fits both dimensions
     let fontSize = Math.min(widthBasedSize, heightBasedSize);
-
-    // Clamp between min and max
     fontSize = Math.max(minFontSize, Math.min(maxFontSize, fontSize));
 
     return Math.floor(fontSize);
   };
 
-  // Save text replacement
-  const saveTextReplacement = () => {
-    if (!replacementText.trim() || !editingReplacement) return;
+  // Save box (with or without text replacement)
+  const saveBox = () => {
+    if (!editingBox) return;
 
-    // Check if we're editing an existing replacement (has id) or creating a new one
-    if (editingReplacement.id) {
-      // Update existing text replacement
-      setTextReplacements(
-        textReplacements.map((tr) =>
-          tr.id === editingReplacement.id
-            ? {
-                ...tr,
-                text: replacementText,
-                fontSize: calculateFontSize(
-                  replacementText,
-                  editingReplacement.width,
-                  editingReplacement.height
-                ),
-              }
-            : tr
-        )
-      );
+    const boxToSave = {
+      ...editingBox,
+      text: replacementText.trim(),
+      fontSize: replacementText.trim()
+        ? calculateFontSize(
+            replacementText.trim(),
+            editingBox.width,
+            editingBox.height
+          )
+        : 0,
+    };
+
+    if (editingBox.isEditing) {
+      // Update existing box
+      setBoxes(boxes.map((b) => (b.id === editingBox.id ? boxToSave : b)));
     } else {
-      // Create new text replacement
-      const newReplacement = {
-        ...editingReplacement,
-        id: Date.now(),
-        text: replacementText,
-        fontSize: calculateFontSize(
-          replacementText,
-          editingReplacement.width,
-          editingReplacement.height
-        ),
-      };
-      setTextReplacements([...textReplacements, newReplacement]);
+      // Add new box
+      setBoxes([...boxes, boxToSave]);
     }
 
-    setEditingReplacement(null);
+    setEditingBox(null);
     setReplacementText("");
-    setIsAnonymized(true);
   };
 
-  // Edit existing text replacement
-  const editTextReplacement = (replacement) => {
-    setEditingReplacement(replacement);
-    setReplacementText(replacement.text);
-    setIsAnonymized(false); // Allow editing by going back to normal view
+  // Edit existing box
+  const editBox = (box) => {
+    setEditingBox({ ...box, isEditing: true });
+    setReplacementText(box.text || "");
   };
 
-  // Delete text replacement
-  const deleteTextReplacement = (id) => {
-    setTextReplacements(textReplacements.filter((tr) => tr.id !== id));
-  };
-
-  // Apply anonymization
-  const applyAnonymization = () => {
-    if (boxes.length === 0 && textReplacements.length === 0) {
-      alert("Please draw some boxes first");
-      return;
-    }
-    setIsAnonymized(true);
-  };
-
-  // Reset to original view
-  const resetToOriginal = () => {
-    setIsAnonymized(false);
+  // Delete box
+  const deleteBox = (id) => {
+    setBoxes(boxes.filter((b) => b.id !== id));
   };
 
   // Render PDF page (only when page changes or PDF loads)
@@ -317,160 +239,130 @@ export default function PDFAnonymizer() {
     // Clear overlay
     context.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
 
-    if (isAnonymized) {
-      // Draw redaction boxes (black out completely)
-      context.fillStyle = "rgb(0, 0, 0)";
-      boxes
-        .filter((box) => box.page === currentPage)
-        .forEach((box) => {
+    // Draw all boxes for current page
+    boxes
+      .filter((box) => box.page === currentPage)
+      .forEach((box) => {
+        if (box.text) {
+          // Text replacement: white background with text
+          context.fillStyle = "rgba(255, 255, 255, 0.9)";
           context.fillRect(box.x, box.y, box.width, box.height);
-        });
 
-      // Draw text replacements (white background with black text - no black box)
-      textReplacements
-        .filter((tr) => tr.page === currentPage)
-        .forEach((tr) => {
-          // Draw white background
-          context.fillStyle = "rgb(255, 255, 255)";
-          context.fillRect(tr.x, tr.y, tr.width, tr.height);
-
-          // Draw black text with dynamic font size and centered
-          context.fillStyle = "rgb(0, 0, 0)";
-          context.font = `${tr.fontSize || 12}px Arial`;
-          context.textBaseline = "middle";
-          context.textAlign = "center";
-
-          const textX = tr.x + tr.width / 2;
-          const textY = tr.y + tr.height / 2;
-
-          context.fillText(tr.text, textX, textY);
-        });
-    } else if (showBoxes) {
-      // Draw redaction boxes (original functionality - semi-transparent)
-      context.fillStyle = "rgba(0, 0, 0, 0.7)";
-      context.strokeStyle = "red";
-      context.lineWidth = 2;
-
-      boxes
-        .filter((box) => box.page === currentPage)
-        .forEach((box) => {
-          context.fillRect(box.x, box.y, box.width, box.height);
-          context.strokeRect(box.x, box.y, box.width, box.height);
-        });
-
-      // Draw text replacement areas (semi-transparent green)
-      context.fillStyle = "rgba(0, 100, 0, 0.5)";
-      context.strokeStyle = "green";
-      context.lineWidth = 2;
-
-      textReplacements
-        .filter((tr) => tr.page === currentPage)
-        .forEach((tr) => {
-          context.fillRect(tr.x, tr.y, tr.width, tr.height);
-          context.strokeRect(tr.x, tr.y, tr.width, tr.height);
-
-          // Draw text preview with dynamic font size and centered
-          context.fillStyle = "rgb(255, 255, 255)";
-          context.font = `${tr.fontSize || 12}px Arial`;
-          context.textBaseline = "middle";
-          context.textAlign = "center";
-
-          const textX = tr.x + tr.width / 2;
-          const textY = tr.y + tr.height / 2;
-
-          context.fillText(tr.text, textX, textY);
-          context.fillStyle = "rgba(0, 100, 0, 0.5)";
-        });
-
-      // Draw current box (while drawing)
-      if (currentBox) {
-        if (currentBox.type === "text") {
-          context.fillStyle = "rgba(0, 100, 0, 0.5)";
           context.strokeStyle = "green";
+          context.lineWidth = 2;
+          context.strokeRect(box.x, box.y, box.width, box.height);
+
+          // Draw text
+          context.fillStyle = "rgb(0, 0, 0)";
+          context.font = `${box.fontSize || 12}px Arial`;
+          context.textBaseline = "middle";
+          context.textAlign = "center";
+
+          const textX = box.x + box.width / 2;
+          const textY = box.y + box.height / 2;
+
+          context.fillText(box.text, textX, textY);
         } else {
-          context.fillStyle = "rgba(0, 0, 0, 0.7)";
+          // Redaction: black box
+          context.fillStyle = "rgba(0, 0, 0, 0.8)";
+          context.fillRect(box.x, box.y, box.width, box.height);
+
           context.strokeStyle = "red";
+          context.lineWidth = 2;
+          context.strokeRect(box.x, box.y, box.width, box.height);
         }
+      });
 
-        context.fillRect(
-          currentBox.x,
-          currentBox.y,
-          currentBox.width,
-          currentBox.height
-        );
-        context.strokeRect(
-          currentBox.x,
-          currentBox.y,
-          currentBox.width,
-          currentBox.height
-        );
-      }
+    // Draw current box (while drawing)
+    if (currentBox) {
+      context.fillStyle = "rgba(100, 100, 100, 0.5)";
+      context.strokeStyle = "blue";
+      context.lineWidth = 2;
+      context.fillRect(
+        currentBox.x,
+        currentBox.y,
+        currentBox.width,
+        currentBox.height
+      );
+      context.strokeRect(
+        currentBox.x,
+        currentBox.y,
+        currentBox.width,
+        currentBox.height
+      );
     }
-  }, [
-    boxes,
-    textReplacements,
-    currentBox,
-    currentPage,
-    showBoxes,
-    isAnonymized,
-    pdfFile,
-  ]);
+  }, [boxes, currentBox, currentPage, pdfFile]);
 
-  // Generate anonymized PDF
+  // Generate anonymized PDF (consolidated logic)
   const generateAnonymizedPDF = async () => {
-    if (!pdfFile || (boxes.length === 0 && textReplacements.length === 0)) {
+    if (!pdfFile || boxes.length === 0) {
       alert("Please upload a PDF and draw boxes to anonymize");
-      return;
+      return null;
     }
 
-    setIsProcessing(true);
+    const pdfLibScript = document.createElement("script");
+    pdfLibScript.src =
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js";
+    document.body.appendChild(pdfLibScript);
 
-    try {
-      const pdfLibScript = document.createElement("script");
-      pdfLibScript.src =
-        "https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js";
-      document.body.appendChild(pdfLibScript);
+    await new Promise((resolve) => {
+      pdfLibScript.onload = resolve;
+    });
 
-      await new Promise((resolve) => {
-        pdfLibScript.onload = resolve;
-      });
+    const { PDFDocument, rgb } = window.PDFLib;
 
-      const { PDFDocument, rgb } = window.PDFLib;
+    const arrayBuffer = await pdfFile.arrayBuffer();
+    const pdfDoc = await PDFDocument.load(arrayBuffer);
+    const pages = pdfDoc.getPages();
 
-      const arrayBuffer = await pdfFile.arrayBuffer();
-      const pdfDoc = await PDFDocument.load(arrayBuffer);
-      const pages = pdfDoc.getPages();
+    // Group boxes by page
+    const boxesByPage = {};
+    boxes.forEach((box) => {
+      if (!boxesByPage[box.page]) {
+        boxesByPage[box.page] = [];
+      }
+      boxesByPage[box.page].push(box);
+    });
 
-      const boxesByPage = {};
-      boxes.forEach((box) => {
-        if (!boxesByPage[box.page]) {
-          boxesByPage[box.page] = [];
-        }
-        boxesByPage[box.page].push(box);
-      });
+    // Process each page
+    for (const [pageNum, pageBoxes] of Object.entries(boxesByPage)) {
+      const page = pages[parseInt(pageNum) - 1];
+      const { height, width } = page.getSize();
 
-      const textReplacementsByPage = {};
-      textReplacements.forEach((tr) => {
-        if (!textReplacementsByPage[tr.page]) {
-          textReplacementsByPage[tr.page] = [];
-        }
-        textReplacementsByPage[tr.page].push(tr);
-      });
+      pageBoxes.forEach((box) => {
+        const pdfX = box.x * (width / canvasRef.current.width);
+        const pdfY =
+          height -
+          box.y * (height / canvasRef.current.height) -
+          box.height * (height / canvasRef.current.height);
+        const pdfWidth = box.width * (width / canvasRef.current.width);
+        const pdfHeight = box.height * (height / canvasRef.current.height);
 
-      for (const [pageNum, pageBoxes] of Object.entries(boxesByPage)) {
-        const page = pages[parseInt(pageNum) - 1];
-        const { height } = page.getSize();
+        if (box.text) {
+          // Text replacement: white background
+          page.drawRectangle({
+            x: pdfX,
+            y: pdfY,
+            width: pdfWidth,
+            height: pdfHeight,
+            color: rgb(1, 1, 1),
+          });
 
-        pageBoxes.forEach((box) => {
-          const pdfX = box.x * (page.getWidth() / canvasRef.current.width);
-          const pdfY =
-            height -
-            box.y * (height / canvasRef.current.height) -
-            box.height * (height / canvasRef.current.height);
-          const pdfWidth =
-            box.width * (page.getWidth() / canvasRef.current.width);
-          const pdfHeight = box.height * (height / canvasRef.current.height);
+          // Draw text
+          const pdfFontSize =
+            (box.fontSize || 12) * (height / canvasRef.current.height);
 
+          page.drawText(box.text, {
+            x: pdfX,
+            y: pdfY + pdfHeight - pdfFontSize,
+            size: pdfFontSize,
+            color: rgb(0, 0, 0),
+            lineHeight: 1,
+            maxWidth: pdfWidth - 4,
+            wordBreaks: [" "],
+          });
+        } else {
+          // Redaction: black box
           page.drawRectangle({
             x: pdfX,
             y: pdfY,
@@ -478,56 +370,23 @@ export default function PDFAnonymizer() {
             height: pdfHeight,
             color: rgb(0, 0, 0),
           });
-        });
-      }
+        }
+      });
+    }
 
-      // Handle text replacements
-      for (const [pageNum, pageTextReplacements] of Object.entries(
-        textReplacementsByPage
-      )) {
-        const page = pages[parseInt(pageNum) - 1];
-        const { height, width } = page.getSize();
+    const pdfBytes = await pdfDoc.save();
+    document.body.removeChild(pdfLibScript);
 
-        pageTextReplacements.forEach((tr) => {
-          const pdfX = tr.x * (width / canvasRef.current.width);
-          const pdfY =
-            height -
-            tr.y * (height / canvasRef.current.height) -
-            tr.height * (height / canvasRef.current.height);
-          const pdfWidth = tr.width * (width / canvasRef.current.width);
-          const pdfHeight = tr.height * (height / canvasRef.current.height);
+    return pdfBytes;
+  };
 
-          // Draw white background for text replacement
-          page.drawRectangle({
-            x: pdfX,
-            y: pdfY,
-            width: pdfWidth,
-            height: pdfHeight,
-            color: rgb(1, 1, 1), // White background
-          });
+  // Download PDF
+  const downloadPDF = async () => {
+    setIsProcessing(true);
+    try {
+      const pdfBytes = await generateAnonymizedPDF();
+      if (!pdfBytes) return;
 
-          // Calculate PDF font size (convert from canvas pixels to PDF points)
-          const pdfFontSize =
-            (tr.fontSize || 12) * (height / canvasRef.current.height);
-
-          // Calculate text position - FIXED: Proper centering in PDF coordinate system
-          // const textPdfX = pdfX + pdfWidth / 2;
-          // const textPdfY = pdfY + pdfHeight / 2 - pdfFontSize * 0.3; // Adjust for baseline
-
-          page.drawText(tr.text, {
-            x: pdfX,
-            y: pdfY + pdfHeight - pdfFontSize, // approximate top alignment
-            size: pdfFontSize,
-            color: rgb(0, 0, 0), // Black text
-            lineHeight: 1,
-            maxWidth: pdfWidth - 4, // Small padding
-            wordBreaks: [" "],
-            textAlign: "center", // Ensure center alignment in PDF
-          });
-        });
-      }
-
-      const pdfBytes = await pdfDoc.save();
       const blob = new Blob([pdfBytes], { type: "application/pdf" });
       const url = URL.createObjectURL(blob);
 
@@ -537,126 +396,26 @@ export default function PDFAnonymizer() {
       a.click();
 
       URL.revokeObjectURL(url);
-      document.body.removeChild(pdfLibScript);
+      toast.success("PDF downloaded successfully!", {
+        position: "bottom-right",
+      });
     } catch (error) {
       console.error("Error generating PDF:", error);
-      alert("Error generating anonymized PDF. Please try again.");
+      toast.error("Error generating anonymized PDF. Please try again.", {
+        position: "bottom-right",
+      });
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const uploadAnonymizedPDF = async () => {
-    if (!pdfFile || (boxes.length === 0 && textReplacements.length === 0)) {
-      alert("Please upload a PDF and draw boxes to anonymize");
-      return;
-    }
-
+  // Upload PDF
+  const uploadPDF = async () => {
     setIsProcessing(true);
-
     try {
-      const pdfLibScript = document.createElement("script");
-      pdfLibScript.src =
-        "https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js";
-      document.body.appendChild(pdfLibScript);
+      const pdfBytes = await generateAnonymizedPDF();
+      if (!pdfBytes) return;
 
-      await new Promise((resolve) => {
-        pdfLibScript.onload = resolve;
-      });
-
-      const { PDFDocument, rgb } = window.PDFLib;
-
-      const arrayBuffer = await pdfFile.arrayBuffer();
-      const pdfDoc = await PDFDocument.load(arrayBuffer);
-      const pages = pdfDoc.getPages();
-
-      const boxesByPage = {};
-      boxes.forEach((box) => {
-        if (!boxesByPage[box.page]) {
-          boxesByPage[box.page] = [];
-        }
-        boxesByPage[box.page].push(box);
-      });
-
-      const textReplacementsByPage = {};
-      textReplacements.forEach((tr) => {
-        if (!textReplacementsByPage[tr.page]) {
-          textReplacementsByPage[tr.page] = [];
-        }
-        textReplacementsByPage[tr.page].push(tr);
-      });
-
-      for (const [pageNum, pageBoxes] of Object.entries(boxesByPage)) {
-        const page = pages[parseInt(pageNum) - 1];
-        const { height } = page.getSize();
-
-        pageBoxes.forEach((box) => {
-          const pdfX = box.x * (page.getWidth() / canvasRef.current.width);
-          const pdfY =
-            height -
-            box.y * (height / canvasRef.current.height) -
-            box.height * (height / canvasRef.current.height);
-          const pdfWidth =
-            box.width * (page.getWidth() / canvasRef.current.width);
-          const pdfHeight = box.height * (height / canvasRef.current.height);
-
-          page.drawRectangle({
-            x: pdfX,
-            y: pdfY,
-            width: pdfWidth,
-            height: pdfHeight,
-            color: rgb(0, 0, 0),
-          });
-        });
-      }
-
-      // Handle text replacements for upload
-      for (const [pageNum, pageTextReplacements] of Object.entries(
-        textReplacementsByPage
-      )) {
-        const page = pages[parseInt(pageNum) - 1];
-        const { height, width } = page.getSize();
-
-        pageTextReplacements.forEach((tr) => {
-          const pdfX = tr.x * (width / canvasRef.current.width);
-          const pdfY =
-            height -
-            tr.y * (height / canvasRef.current.height) -
-            tr.height * (height / canvasRef.current.height);
-          const pdfWidth = tr.width * (width / canvasRef.current.width);
-          const pdfHeight = tr.height * (height / canvasRef.current.height);
-
-          // White background for text replacement
-          page.drawRectangle({
-            x: pdfX,
-            y: pdfY,
-            width: pdfWidth,
-            height: pdfHeight,
-            color: rgb(1, 1, 1),
-          });
-
-          // Calculate PDF font size
-          const pdfFontSize =
-            (tr.fontSize || 12) * (height / canvasRef.current.height);
-
-          // Calculate text position - FIXED: Proper centering
-          // const textPdfX = pdfX + pdfWidth / 2;
-          // const textPdfY = pdfY + pdfHeight / 2 - pdfFontSize * 0.3; // Adjust for baseline
-
-          page.drawText(tr.text, {
-            x: pdfX,
-            y: pdfY + pdfHeight - pdfFontSize, // approximate top alignment
-            size: pdfFontSize,
-            color: rgb(0, 0, 0),
-            lineHeight: 1,
-            maxWidth: pdfWidth - 4,
-            wordBreaks: [" "],
-            textAlign: "center", // Ensure center alignment
-          });
-        });
-      }
-
-      const pdfBytes = await pdfDoc.save();
       const formData = new FormData();
       const pdfBlob = new Blob([pdfBytes], { type: "application/pdf" });
       const anonymizedFilename =
@@ -667,21 +426,14 @@ export default function PDFAnonymizer() {
       const response = await axios.post(
         `${import.meta.env.VITE_BACKEND_URL}/api/analytics/upload-text-file/`,
         formData
-        // {
-        //   headers: {
-        //     "x-api-key": import.meta.env.VITE_API_KEY,
-        //   },
-        // }
       );
 
       if (!response.data) {
         throw new Error(`Upload failed: ${response.statusText}`);
       }
 
-      const result = await response.data;
-      console.log("Upload successful:", result);
+      console.log("Upload successful:", response.data);
       toast.success("PDF uploaded successfully!", { position: "bottom-right" });
-      document.body.removeChild(pdfLibScript);
     } catch (error) {
       console.error("Error uploading PDF:", error);
       toast.error(
@@ -693,24 +445,18 @@ export default function PDFAnonymizer() {
     }
   };
 
-  const clearBoxes = () => {
+  const clearAllBoxes = () => {
     setBoxes([]);
-    setTextReplacements([]);
-    setIsAnonymized(false);
   };
 
-  const clearCurrentPage = () => {
+  const clearCurrentPageBoxes = () => {
     setBoxes(boxes.filter((box) => box.page !== currentPage));
-    setTextReplacements(
-      textReplacements.filter((tr) => tr.page !== currentPage)
-    );
-    setIsAnonymized(false);
   };
 
-  const toggleMode = () => {
-    setIsTextMode(!isTextMode);
-  };
-  console.log("text mode", isTextMode);
+  const currentPageBoxes = boxes.filter((b) => b.page === currentPage);
+  const redactionCount = currentPageBoxes.filter((b) => !b.text).length;
+  const replacementCount = currentPageBoxes.filter((b) => b.text).length;
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 p-8">
       <div className="max-w-7xl mx-auto">
@@ -720,8 +466,7 @@ export default function PDFAnonymizer() {
             Tax Anonymizer
           </h1>
           <p className="text-gray-400 mb-6">
-            Upload a PDF and draw boxes to redact sensitive information or
-            replace text
+            Upload a PDF and draw boxes to redact or replace text
           </p>
 
           <div className="mb-6">
@@ -744,325 +489,233 @@ export default function PDFAnonymizer() {
           </div>
 
           {pdfFile && (
-            <>
-              <div className="flex flex-col md:flex-row gap-6">
-                <div className="flex flex-col w-full md:w-50 flex-shrink-0 gap-2">
-                  {/* Mode Toggle - Hidden when in Anonymize Preview */}
-                  {!isAnonymized && (
-                    <button
-                      onClick={toggleMode}
-                      className={`px-4 py-2 rounded transition-colors flex items-center gap-2 ${
-                        isTextMode
-                          ? "bg-green-600 hover:bg-green-700"
-                          : "bg-red-600 hover:bg-red-700"
-                      } text-white`}
-                    >
-                      <Type size={18} />
-                      {isTextMode ? "Text Replace Mode" : "Redaction Mode"}
-                    </button>
-                  )}
-
-                  {!isAnonymized && (
-                    <button
-                      onClick={() => setShowBoxes(!showBoxes)}
-                      className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 transition-colors flex items-center gap-2"
-                    >
-                      {showBoxes ? <EyeOff size={18} /> : <Eye size={18} />}
-                      {showBoxes ? "Hide" : "Show"} Boxes
-                    </button>
-                  )}
-
-                  {!isAnonymized && (
-                    <>
-                      <button
-                        onClick={clearCurrentPage}
-                        className="px-4 py-2 bg-orange-600 text-white rounded hover:bg-orange-700 transition-colors flex items-center gap-2"
-                      >
-                        <Trash2 size={18} />
-                        Clear Page
-                      </button>
-
-                      <button
-                        onClick={clearBoxes}
-                        className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors flex items-center gap-2"
-                      >
-                        <Trash2 size={18} />
-                        Clear All ({boxes.length + textReplacements.length})
-                      </button>
-                    </>
-                  )}
-
-                  {!isAnonymized ? (
-                    <button
-                      onClick={applyAnonymization}
-                      disabled={
-                        boxes.length === 0 && textReplacements.length === 0
-                      }
-                      className="px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
-                    >
-                      <ShieldCheck size={18} />
-                      Anonymize Preview
-                    </button>
-                  ) : (
-                    <button
-                      onClick={resetToOriginal}
-                      className="px-4 py-2 bg-cyan-600 text-white rounded hover:bg-cyan-700 transition-colors flex items-center gap-2"
-                    >
-                      <RotateCcw size={18} />
-                      Reset to Original
-                    </button>
-                  )}
-
+            <div className="flex flex-col md:flex-row gap-6">
+              <div className="flex flex-col w-full md:w-64 flex-shrink-0 gap-2">
+                {/* Page Navigation */}
+                <div className="flex gap-2">
                   <button
-                    onClick={generateAnonymizedPDF}
-                    disabled={
-                      (boxes.length === 0 && textReplacements.length === 0) ||
-                      isProcessing
-                    }
-                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+                    onClick={() => changePage(currentPage - 1)}
+                    disabled={currentPage === 1}
+                    className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex-1"
                   >
-                    <Download size={18} />
-                    {isProcessing ? "Processing..." : "Download PDF"}
+                    <ChevronLeft size={18} className="inline" />
                   </button>
 
-                  <button
-                    onClick={uploadAnonymizedPDF}
-                    disabled={
-                      (boxes.length === 0 && textReplacements.length === 0) ||
-                      isProcessing
-                    }
-                    className="px-4 py-2 bg-red-400 text-white rounded hover:bg-red-500 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
-                  >
-                    <UploadIcon size={18} />
-                    {isProcessing ? "Processing..." : "Upload PDF"}
-                  </button>
-
-                  {/* PAGE NAVIGATION ROW — NEW LINE, RIGHT ALIGNED */}
-                  <div className="flex justify-end gap-3 mb-6">
-                    <button
-                      onClick={() => changePage(currentPage - 1)}
-                      disabled={currentPage === 1}
-                      className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors"
-                    >
-                      <ChevronLeft size={18} />
-                    </button>
-
-                    <div className="px-2 py-2 bg-gray-700 text-white rounded flex items-center gap-2">
-                      <span className="text-xs">
-                        Page {currentPage} of {totalPages}
-                      </span>
-                    </div>
-
-                    <button
-                      onClick={() => changePage(currentPage + 1)}
-                      disabled={currentPage === totalPages}
-                      className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors"
-                    >
-                      <ChevronRight size={18} />
-                    </button>
+                  <div className="px-4 py-2 bg-gray-700 text-white rounded flex items-center justify-center flex-1">
+                    <span className="text-sm">
+                      Page {currentPage} / {totalPages}
+                    </span>
                   </div>
+
+                  <button
+                    onClick={() => changePage(currentPage + 1)}
+                    disabled={currentPage === totalPages}
+                    className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex-1"
+                  >
+                    <ChevronRight size={18} className="inline" />
+                  </button>
                 </div>
 
-                <div className="flex-1">
-                  {/* Text Replacements List */}
-                  {textReplacements.filter((tr) => tr.page === currentPage)
-                    .length > 0 && (
-                    <div className="bg-gray-700 border border-gray-600 rounded-lg p-4 mb-4">
-                      <h3 className="text-white font-semibold mb-2 flex items-center gap-2">
-                        <Type size={18} />
-                        Text Replacements on This Page:
-                      </h3>
-                      <div className="space-y-2">
-                        {textReplacements
-                          .filter((tr) => tr.page === currentPage)
-                          .map((tr) => (
-                            <div
-                              key={tr.id}
-                              className="flex items-center justify-between bg-gray-600 p-2 rounded"
-                            >
-                              <div className="flex-1">
-                                <span className="text-white text-sm">
-                                  &quot;{tr.text}&quot;
-                                </span>
-                                <span className="text-gray-400 text-xs ml-2">
-                                  (Size: {tr.fontSize}px)
-                                </span>
-                              </div>
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={() => editTextReplacement(tr)}
-                                  className="px-2 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm"
-                                >
-                                  <Edit3 size={14} />
-                                </button>
-                                <button
-                                  onClick={() => deleteTextReplacement(tr.id)}
-                                  className="px-2 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-sm"
-                                >
-                                  <Trash2 size={14} />
-                                </button>
-                              </div>
-                            </div>
-                          ))}
-                      </div>
+                {/* Clear buttons */}
+                <button
+                  onClick={clearCurrentPageBoxes}
+                  className="px-4 py-2 bg-orange-600 text-white rounded hover:bg-orange-700 transition-colors flex items-center gap-2 justify-center"
+                >
+                  <Trash2 size={18} />
+                  Clear Page ({currentPageBoxes.length})
+                </button>
+
+                <button
+                  onClick={clearAllBoxes}
+                  className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors flex items-center gap-2 justify-center"
+                >
+                  <Trash2 size={18} />
+                  Clear All ({boxes.length})
+                </button>
+
+                <div className="border-t border-gray-600 my-2"></div>
+
+                {/* Download and Upload */}
+                <button
+                  onClick={downloadPDF}
+                  disabled={boxes.length === 0 || isProcessing}
+                  className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2 justify-center"
+                >
+                  <Download size={18} />
+                  {isProcessing ? "Processing..." : "Download PDF"}
+                </button>
+
+                <button
+                  onClick={uploadPDF}
+                  disabled={boxes.length === 0 || isProcessing}
+                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2 justify-center"
+                >
+                  <UploadIcon size={18} />
+                  {isProcessing ? "Processing..." : "Upload PDF"}
+                </button>
+
+                {/* Info box */}
+                <div className="bg-gray-700 border border-gray-600 rounded-lg p-4 mt-4">
+                  <h3 className="text-white font-semibold mb-2 text-sm">
+                    Current Page:
+                  </h3>
+                  <div className="text-gray-300 text-sm space-y-1">
+                    <div>Redactions: {redactionCount}</div>
+                    <div>Replacements: {replacementCount}</div>
+                    <div className="text-xs text-gray-400 mt-2">
+                      Total: {boxes.length} box(es) across all pages
                     </div>
-                  )}
-
-                  {isAnonymized && (
-                    <div className="bg-yellow-900 border border-yellow-600 rounded-lg p-2 mb-6">
-                      <p className="text-yellow-200 font-semibold text-sm flex items-center gap-2">
-                        <ShieldCheck size={18} />
-                        Anonymized Preview Active - All marked areas are now
-                        hidden/replaced
-                      </p>
-                    </div>
-                  )}
-
-                  <div
-                    ref={containerRef}
-                    className="border-2 border-gray-600 rounded-lg overflow-auto bg-gray-900 flex justify-center items-start p-4"
-                    style={{ maxHeight: "70vh" }}
-                  >
-                    <div
-                      style={{ position: "relative", display: "inline-block" }}
-                    >
-                      <canvas
-                        ref={canvasRef}
-                        className="shadow-lg"
-                        style={{
-                          maxWidth: "100%",
-                          height: "auto",
-                          display: "block",
-                        }}
-                      />
-                      <canvas
-                        ref={overlayCanvasRef}
-                        onMouseDown={handleMouseDown}
-                        onMouseMove={handleMouseMove}
-                        onMouseUp={handleMouseUp}
-                        onMouseLeave={handleMouseUp}
-                        className={
-                          isAnonymized
-                            ? "shadow-lg"
-                            : "cursor-crosshair shadow-lg"
-                        }
-                        style={{
-                          position: "absolute",
-                          top: 0,
-                          left: 0,
-                          maxWidth: "100%",
-                          height: "auto",
-                          pointerEvents: isAnonymized ? "none" : "auto",
-                        }}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="mt-4 text-center text-gray-400 text-sm">
-                    {isAnonymized ? (
-                      <span className="text-yellow-400 font-semibold">
-                        Viewing anonymized version -{" "}
-                        {boxes.filter((b) => b.page === currentPage).length}{" "}
-                        redaction(s) and{" "}
-                        {
-                          textReplacements.filter(
-                            (tr) => tr.page === currentPage
-                          ).length
-                        }{" "}
-                        text replacement(s) on this page
-                      </span>
-                    ) : (
-                      <span>
-                        {boxes.filter((b) => b.page === currentPage).length}{" "}
-                        redaction box(es) and{" "}
-                        {
-                          textReplacements.filter(
-                            (tr) => tr.page === currentPage
-                          ).length
-                        }{" "}
-                        text replacement(s) on this page
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="bg-gray-700 border border-gray-600 rounded-lg p-4 mb-3 mt-3">
-                    <h3 className="text-white font-semibold mb-2">
-                      Instructions:
-                    </h3>
-                    <ul className="text-gray-300 text-sm space-y-1 list-disc list-inside">
-                      <li>
-                        {!isAnonymized ? (
-                          <span
-                            className={`font-semibold ${
-                              isTextMode ? "text-green-400" : "text-red-400"
-                            }`}
-                          >
-                            Current Mode:{" "}
-                            {isTextMode ? "Text Replacement" : "Redaction"}
-                          </span>
-                        ) : (
-                          <span className="text-yellow-400 font-semibold">
-                            Preview Mode: Viewing final anonymized version
-                          </span>
-                        )}
-                      </li>
-                      {!isAnonymized && (
-                        <>
-                          <li>
-                            {isTextMode
-                              ? "Click and drag to select text area, then enter replacement text"
-                              : "Click and drag on the PDF to draw redaction boxes"}
-                          </li>
-                          <li>
-                            Toggle between Redaction and Text Replace modes
-                            using the button
-                          </li>
-                        </>
-                      )}
-                      <li>
-                        Navigate between pages to mark content throughout the
-                        document
-                      </li>
-                      <li>
-                        Click &quot;Anonymize Preview&quot; to see how the final
-                        document will look
-                      </li>
-                      <li>
-                        Click &quot;Download PDF&quot; to save the anonymized
-                        version
-                      </li>
-                    </ul>
                   </div>
                 </div>
               </div>
-            </>
+
+              <div className="flex-1">
+                {/* Boxes list for current page */}
+                {currentPageBoxes.length > 0 && (
+                  <div className="bg-gray-700 border border-gray-600 rounded-lg p-4 mb-4">
+                    <h3 className="text-white font-semibold mb-2">
+                      Boxes on Page {currentPage}:
+                    </h3>
+                    <div className="space-y-2 max-h-40 overflow-y-auto">
+                      {currentPageBoxes.map((box, idx) => (
+                        <div
+                          key={box.id}
+                          className="flex items-center justify-between bg-gray-600 p-2 rounded"
+                        >
+                          <div className="flex-1">
+                            <span className="text-white text-sm">
+                              {box.text ? (
+                                <span>
+                                  <span className="text-green-400">
+                                    Replace:
+                                  </span>{" "}
+                                  &quot;{box.text}&quot;
+                                </span>
+                              ) : (
+                                <span>
+                                  <span className="text-red-400">
+                                    Redact
+                                  </span>{" "}
+                                  #{idx + 1}
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => editBox(box)}
+                              className="px-2 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm"
+                              title="Edit"
+                            >
+                              <Edit3 size={14} />
+                            </button>
+                            <button
+                              onClick={() => deleteBox(box.id)}
+                              className="px-2 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-sm"
+                              title="Delete"
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* PDF viewer */}
+                <div
+                  ref={containerRef}
+                  className="border-2 border-gray-600 rounded-lg overflow-auto bg-gray-900 flex justify-center items-start p-4"
+                  style={{ maxHeight: "70vh" }}
+                >
+                  <div
+                    style={{ position: "relative", display: "inline-block" }}
+                  >
+                    <canvas
+                      ref={canvasRef}
+                      className="shadow-lg"
+                      style={{
+                        maxWidth: "100%",
+                        height: "auto",
+                        display: "block",
+                      }}
+                    />
+                    <canvas
+                      ref={overlayCanvasRef}
+                      onMouseDown={handleMouseDown}
+                      onMouseMove={handleMouseMove}
+                      onMouseUp={handleMouseUp}
+                      onMouseLeave={handleMouseUp}
+                      className="cursor-crosshair shadow-lg"
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        maxWidth: "100%",
+                        height: "auto",
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Instructions */}
+                <div className="bg-gray-700 border border-gray-600 rounded-lg p-4 mt-4">
+                  <h3 className="text-white font-semibold mb-2">
+                    Instructions:
+                  </h3>
+                  <ul className="text-gray-300 text-sm space-y-1 list-disc list-inside">
+                    <li>Click and drag on the PDF to draw boxes</li>
+                    <li>
+                      For each box, choose to add replacement text or leave
+                      empty for redaction
+                    </li>
+                    <li>
+                      <span className="text-red-400">Red boxes</span> = full
+                      redaction (black)
+                    </li>
+                    <li>
+                      <span className="text-green-400">Green boxes</span> = text
+                      replacement
+                    </li>
+                    <li>Navigate pages to mark content throughout the document</li>
+                    <li>Click Download or Upload when ready</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
           )}
 
-          {/* Text Replacement Modal - Updated backdrop */}
-          {editingReplacement && (
-            <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          {/* Text Replacement Modal */}
+          {editingBox && (
+            <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
               <div className="bg-gray-800 p-6 rounded-lg border border-gray-600 w-96 max-w-full shadow-xl">
                 <h3 className="text-white text-lg font-semibold mb-4">
-                  Enter Replacement Text
+                  {editingBox.isEditing ? "Edit Box" : "Add Box"}
                 </h3>
+                <p className="text-gray-400 text-sm mb-4">
+                  Enter replacement text, or leave empty to redact (black box)
+                </p>
                 <textarea
                   value={replacementText}
                   onChange={(e) => setReplacementText(e.target.value)}
-                  placeholder="Enter text to replace the selected area..."
+                  placeholder="Enter replacement text (optional)..."
                   className="w-full h-32 p-3 bg-gray-700 text-white border border-gray-600 rounded mb-4 resize-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   autoFocus
                 />
                 <div className="flex gap-3 justify-end">
                   <button
-                    onClick={() => setEditingReplacement(null)}
+                    onClick={() => {
+                      setEditingBox(null);
+                      setReplacementText("");
+                    }}
                     className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
                   >
                     Cancel
                   </button>
                   <button
-                    onClick={saveTextReplacement}
-                    disabled={!replacementText.trim()}
-                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors"
+                    onClick={saveBox}
+                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
                   >
                     Save
                   </button>
