@@ -2,15 +2,21 @@ import { useState, useRef, useEffect } from "react";
 import {
   Upload,
   Download,
-  UploadIcon,
   Trash2,
-  Square,
+  Shield,
   ChevronLeft,
   ChevronRight,
   Edit3,
   X,
+  FileText,
+  Info,
+  Search,
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
+  ChevronsLeft,
+  ChevronsRight,
 } from "lucide-react";
-import axios from "axios";
 import { toast } from "react-toastify";
 
 export default function PDFAnonymizer() {
@@ -22,6 +28,15 @@ export default function PDFAnonymizer() {
   const [startPoint, setStartPoint] = useState(null);
   const [currentBox, setCurrentBox] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
+
+  // PDF toolbar state
+  const [zoomLevel, setZoomLevel] = useState(100);
+  const [pageInput, setPageInput] = useState("");
+  const [searchText, setSearchText] = useState("");
+  const [searchResults, setSearchResults] = useState([]); // [{page, matches}]
+  const [currentSearchIdx, setCurrentSearchIdx] = useState(-1);
+  const [isSearching, setIsSearching] = useState(false);
+  const [showSearchBar, setShowSearchBar] = useState(false);
 
   // Text replacement modal
   const [editingBox, setEditingBox] = useState(null);
@@ -76,10 +91,11 @@ export default function PDFAnonymizer() {
     renderPage(pdf, 1);
   };
 
-  // Render PDF page
+  // Render PDF page at high resolution for clarity (scale 2)
+  // Visual size is controlled by CSS wrapper width, not canvas resolution
   const renderPage = async (pdf, pageNum) => {
     const page = await pdf.getPage(pageNum);
-    const viewport = page.getViewport({ scale: 1 });
+    const viewport = page.getViewport({ scale: 2 });
 
     const canvas = canvasRef.current;
     const context = canvas.getContext("2d");
@@ -244,8 +260,8 @@ export default function PDFAnonymizer() {
       .filter((box) => box.page === currentPage)
       .forEach((box) => {
         if (box.text) {
-          // Text replacement: white background with text
-          context.fillStyle = "rgba(255, 255, 255, 0.9)";
+          // Text replacement: white background to cover old text, then overlay new text
+          context.fillStyle = "rgba(255, 255, 255, 1)";
           context.fillRect(box.x, box.y, box.width, box.height);
 
           context.strokeStyle = "green";
@@ -339,7 +355,7 @@ export default function PDFAnonymizer() {
         const pdfHeight = box.height * (height / canvasRef.current.height);
 
         if (box.text) {
-          // Text replacement: white background
+          // Text replacement: white background to cover old text
           page.drawRectangle({
             x: pdfX,
             y: pdfY,
@@ -348,7 +364,6 @@ export default function PDFAnonymizer() {
             color: rgb(1, 1, 1),
           });
 
-          // Draw text
           const pdfFontSize =
             (box.fontSize || 12) * (height / canvasRef.current.height);
 
@@ -409,42 +424,6 @@ export default function PDFAnonymizer() {
     }
   };
 
-  // Upload PDF
-  const uploadPDF = async () => {
-    setIsProcessing(true);
-    try {
-      const pdfBytes = await generateAnonymizedPDF();
-      if (!pdfBytes) return;
-
-      const formData = new FormData();
-      const pdfBlob = new Blob([pdfBytes], { type: "application/pdf" });
-      const anonymizedFilename =
-        "anonymized_" + (pdfFile.name || "document.pdf");
-
-      formData.append("file", pdfBlob, anonymizedFilename);
-
-      const response = await axios.post(
-        `${import.meta.env.VITE_BACKEND_URL}/api/analytics/upload-text-file/`,
-        formData
-      );
-
-      if (!response.data) {
-        throw new Error(`Upload failed: ${response.statusText}`);
-      }
-
-      console.log("Upload successful:", response.data);
-      toast.success("PDF uploaded successfully!", { position: "bottom-right" });
-    } catch (error) {
-      console.error("Error uploading PDF:", error);
-      toast.error(
-        "There was some issue in uploading PDF. Please try again later.",
-        { position: "bottom-right" }
-      );
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
   const clearAllBoxes = () => {
     setBoxes([]);
   };
@@ -453,31 +432,204 @@ export default function PDFAnonymizer() {
     setBoxes(boxes.filter((box) => box.page !== currentPage));
   };
 
+  // Zoom controls
+  const handleZoom = (delta) => {
+    setZoomLevel((prev) => {
+      const next = Math.max(50, Math.min(200, prev + delta));
+      return next;
+    });
+  };
+
+  const resetZoom = () => setZoomLevel(100);
+
+  // Go to specific page
+  const handleGoToPage = (e) => {
+    e.preventDefault();
+    const page = parseInt(pageInput);
+    if (page >= 1 && page <= totalPages) {
+      changePage(page);
+      setPageInput("");
+    } else {
+      toast.error(`Enter a page between 1 and ${totalPages}`, {
+        position: "bottom-right",
+      });
+    }
+  };
+
+  // Search within PDF text
+  const handleSearch = async () => {
+    if (!searchText.trim() || !pdfDocRef.current) return;
+    setIsSearching(true);
+    setSearchResults([]);
+    setCurrentSearchIdx(-1);
+
+    const results = [];
+    const query = searchText.trim().toLowerCase();
+
+    for (let i = 1; i <= totalPages; i++) {
+      const page = await pdfDocRef.current.getPage(i);
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items.map((item) => item.str).join(" ");
+      const lowerPageText = pageText.toLowerCase();
+
+      let count = 0;
+      let idx = lowerPageText.indexOf(query);
+      while (idx !== -1) {
+        count++;
+        idx = lowerPageText.indexOf(query, idx + 1);
+      }
+
+      if (count > 0) {
+        results.push({ page: i, matches: count });
+      }
+    }
+
+    setSearchResults(results);
+    setIsSearching(false);
+
+    if (results.length > 0) {
+      setCurrentSearchIdx(0);
+      changePage(results[0].page);
+      toast.success(
+        `Found ${results.reduce((s, r) => s + r.matches, 0)} match(es) across ${results.length} page(s)`,
+        { position: "bottom-right" }
+      );
+    } else {
+      toast.info(`No results found for "${searchText.trim()}"`, {
+        position: "bottom-right",
+      });
+    }
+  };
+
+  const navigateSearchResult = (direction) => {
+    if (searchResults.length === 0) return;
+    const nextIdx =
+      (currentSearchIdx + direction + searchResults.length) %
+      searchResults.length;
+    setCurrentSearchIdx(nextIdx);
+    changePage(searchResults[nextIdx].page);
+  };
+
+  const clearSearch = () => {
+    setSearchText("");
+    setSearchResults([]);
+    setCurrentSearchIdx(-1);
+    setShowSearchBar(false);
+  };
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    if (!pdfFile) return;
+
+    const handleKeyDown = (e) => {
+      // Don't trigger shortcuts when typing in inputs
+      if (
+        e.target.tagName === "INPUT" ||
+        e.target.tagName === "TEXTAREA"
+      )
+        return;
+
+      if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+        e.preventDefault();
+        changePage(currentPage - 1);
+      } else if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+        e.preventDefault();
+        changePage(currentPage + 1);
+      } else if (e.key === "Home") {
+        e.preventDefault();
+        changePage(1);
+      } else if (e.key === "End") {
+        e.preventDefault();
+        changePage(totalPages);
+      } else if ((e.ctrlKey || e.metaKey) && e.key === "f") {
+        e.preventDefault();
+        setShowSearchBar((prev) => !prev);
+      } else if (e.key === "+" || e.key === "=") {
+        if (e.ctrlKey || e.metaKey) {
+          e.preventDefault();
+          handleZoom(25);
+        }
+      } else if (e.key === "-") {
+        if (e.ctrlKey || e.metaKey) {
+          e.preventDefault();
+          handleZoom(-25);
+        }
+      } else if (e.key === "0" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        resetZoom();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [pdfFile, currentPage, totalPages]);
+
+  const [showAllAnnotations, setShowAllAnnotations] = useState(false);
+
   const currentPageBoxes = boxes.filter((b) => b.page === currentPage);
   const redactionCount = currentPageBoxes.filter((b) => !b.text).length;
   const replacementCount = currentPageBoxes.filter((b) => b.text).length;
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 p-8">
-      <div className="max-w-7xl mx-auto">
-        <div className="bg-gray-800 rounded-lg shadow-2xl p-6 border border-gray-700">
-          <h1 className="text-4xl font-bold text-white mb-2 flex items-center gap-3">
-            <Square className="text-red-500" size={36} />
-            Tax Anonymizer
-          </h1>
-          <p className="text-gray-400 mb-6">
-            Upload a PDF and draw boxes to redact or replace text
-          </p>
+  // Group all boxes by page for the all-annotations panel
+  const boxesByPageGrouped = {};
+  boxes.forEach((box) => {
+    if (!boxesByPageGrouped[box.page]) boxesByPageGrouped[box.page] = [];
+    boxesByPageGrouped[box.page].push(box);
+  });
 
-          <div className="mb-6">
-            <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-600 border-dashed rounded-lg cursor-pointer bg-gray-700 hover:bg-gray-650 transition-colors">
-              <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                <Upload className="w-10 h-10 mb-3 text-gray-400" />
-                <p className="mb-2 text-sm text-gray-400">
-                  <span className="font-semibold">Click to upload</span> or drag
-                  and drop
+  return (
+    <div className="h-screen flex flex-col bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 overflow-hidden">
+      {/* Header */}
+      <header className="border-b border-slate-700/50 bg-slate-900/80 backdrop-blur-sm sticky top-0 z-40">
+        <div className="max-w-[1600px] mx-auto px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="bg-emerald-600 p-2 rounded-lg">
+              <Shield className="text-white" size={24} />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold text-white tracking-tight">
+                Acurat
+              </h1>
+              <p className="text-xs text-slate-400">
+                Tax Document Anonymizer
+              </p>
+            </div>
+          </div>
+          {pdfFile && (
+            <div className="flex items-center gap-2 text-sm text-slate-400">
+              <FileText size={16} />
+              <span className="truncate max-w-xs">{pdfFile.name}</span>
+            </div>
+          )}
+        </div>
+      </header>
+
+      <div className="max-w-[1600px] mx-auto px-6 py-4 flex-1 overflow-hidden w-full flex flex-col">
+        {/* Upload area */}
+        {!pdfFile && (
+          <div className="flex flex-col items-center justify-center py-20">
+            <div className="bg-emerald-600 p-4 rounded-2xl mb-6">
+              <Shield className="text-white" size={48} />
+            </div>
+            <h2 className="text-3xl font-bold text-white mb-2">
+              Anonymize Your Tax Documents
+            </h2>
+            <p className="text-slate-400 mb-8 text-center max-w-md">
+              Securely redact or replace sensitive information in your US tax
+              documents before sharing.
+            </p>
+            <label className="flex flex-col items-center justify-center w-full max-w-lg h-44 border-2 border-slate-600 border-dashed rounded-xl cursor-pointer bg-slate-800/50 hover:bg-slate-800 hover:border-emerald-500/50 transition-all">
+              <div className="flex flex-col items-center justify-center py-6">
+                <Upload className="w-12 h-12 mb-4 text-emerald-500" />
+                <p className="mb-2 text-sm text-slate-300">
+                  <span className="font-semibold text-white">
+                    Click to upload
+                  </span>{" "}
+                  or drag and drop your PDF
                 </p>
-                <p className="text-xs text-gray-500">PDF files only</p>
+                <p className="text-xs text-slate-500">
+                  Supports all US tax forms (1040, W-2, 1099, etc.)
+                </p>
               </div>
               <input
                 type="file"
@@ -487,156 +639,499 @@ export default function PDFAnonymizer() {
               />
             </label>
           </div>
+        )}
 
-          {pdfFile && (
-            <div className="flex flex-col md:flex-row gap-6">
-              <div className="flex flex-col w-full md:w-64 flex-shrink-0 gap-2">
-                {/* Page Navigation */}
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => changePage(currentPage - 1)}
-                    disabled={currentPage === 1}
-                    className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex-1"
-                  >
-                    <ChevronLeft size={18} className="inline" />
-                  </button>
+        {pdfFile && (
+          <>
+            {/* Upload new file option */}
+            <div className="mb-3 flex-shrink-0">
+              <label className="inline-flex items-center gap-2 px-4 py-2 text-sm text-slate-400 hover:text-white bg-slate-800 rounded-lg cursor-pointer hover:bg-slate-700 transition-colors border border-slate-700">
+                <Upload size={16} />
+                Upload different document
+                <input
+                  type="file"
+                  className="hidden"
+                  accept="application/pdf"
+                  onChange={handleFileUpload}
+                />
+              </label>
+            </div>
 
-                  <div className="px-4 py-2 bg-gray-700 text-white rounded flex items-center justify-center flex-1">
-                    <span className="text-sm">
-                      Page {currentPage} / {totalPages}
-                    </span>
+            <div className="flex flex-col lg:flex-row gap-6 flex-1 overflow-hidden">
+              {/* Sidebar */}
+              <div className="flex flex-col w-full lg:w-60 flex-shrink-0 gap-3 overflow-y-auto">
+                {/* Statistics */}
+                <div className="bg-slate-800 rounded-xl border border-slate-700 p-4">
+                  <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
+                    Annotations
+                  </h3>
+                  <div className="text-sm space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Redactions</span>
+                      <span className="text-white font-medium">
+                        {redactionCount}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Replacements</span>
+                      <span className="text-white font-medium">
+                        {replacementCount}
+                      </span>
+                    </div>
+                    <div className="border-t border-slate-700 pt-2 flex justify-between">
+                      <span className="text-slate-500 text-xs">
+                        Total across all pages
+                      </span>
+                      <span className="text-slate-300 text-xs font-medium">
+                        {boxes.length}
+                      </span>
+                    </div>
                   </div>
-
-                  <button
-                    onClick={() => changePage(currentPage + 1)}
-                    disabled={currentPage === totalPages}
-                    className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex-1"
-                  >
-                    <ChevronRight size={18} className="inline" />
-                  </button>
                 </div>
 
-                {/* Clear buttons */}
-                <button
-                  onClick={clearCurrentPageBoxes}
-                  className="px-4 py-2 bg-orange-600 text-white rounded hover:bg-orange-700 transition-colors flex items-center gap-2 justify-center"
-                >
-                  <Trash2 size={18} />
-                  Clear Page ({currentPageBoxes.length})
-                </button>
-
-                <button
-                  onClick={clearAllBoxes}
-                  className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700 transition-colors flex items-center gap-2 justify-center"
-                >
-                  <Trash2 size={18} />
-                  Clear All ({boxes.length})
-                </button>
-
-                <div className="border-t border-gray-600 my-2"></div>
-
-                {/* Download and Upload */}
-                <button
-                  onClick={downloadPDF}
-                  disabled={boxes.length === 0 || isProcessing}
-                  className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2 justify-center"
-                >
-                  <Download size={18} />
-                  {isProcessing ? "Processing..." : "Download PDF"}
-                </button>
-
-                <button
-                  onClick={uploadPDF}
-                  disabled={boxes.length === 0 || isProcessing}
-                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2 justify-center"
-                >
-                  <UploadIcon size={18} />
-                  {isProcessing ? "Processing..." : "Upload PDF"}
-                </button>
-
-                {/* Info box */}
-                <div className="bg-gray-700 border border-gray-600 rounded-lg p-4 mt-4">
-                  <h3 className="text-white font-semibold mb-2 text-sm">
-                    Current Page:
+                {/* Actions */}
+                <div className="bg-slate-800 rounded-xl border border-slate-700 p-4">
+                  <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">
+                    Actions
                   </h3>
-                  <div className="text-gray-300 text-sm space-y-1">
-                    <div>Redactions: {redactionCount}</div>
-                    <div>Replacements: {replacementCount}</div>
-                    <div className="text-xs text-gray-400 mt-2">
-                      Total: {boxes.length} box(es) across all pages
+                  <div className="space-y-2">
+                    <button
+                      onClick={clearCurrentPageBoxes}
+                      disabled={currentPageBoxes.length === 0}
+                      className="w-full px-4 py-2 bg-slate-700 text-slate-300 rounded-lg hover:bg-slate-600 hover:text-white disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2 justify-center text-sm"
+                    >
+                      <Trash2 size={16} />
+                      Clear Page ({currentPageBoxes.length})
+                    </button>
+
+                    <button
+                      onClick={clearAllBoxes}
+                      disabled={boxes.length === 0}
+                      className="w-full px-4 py-2 bg-slate-700 text-slate-300 rounded-lg hover:bg-slate-600 hover:text-white disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2 justify-center text-sm"
+                    >
+                      <Trash2 size={16} />
+                      Clear All ({boxes.length})
+                    </button>
+
+                    <div className="border-t border-slate-700 pt-2">
+                      <button
+                        onClick={downloadPDF}
+                        disabled={boxes.length === 0 || isProcessing}
+                        className="w-full px-4 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed transition-colors flex items-center gap-2 justify-center font-medium"
+                      >
+                        <Download size={18} />
+                        {isProcessing
+                          ? "Processing..."
+                          : "Download Anonymized PDF"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Help */}
+                <div className="bg-slate-800/50 rounded-xl border border-slate-700/50 p-4">
+                  <div className="flex items-start gap-2">
+                    <Info size={16} className="text-emerald-500 mt-0.5 flex-shrink-0" />
+                    <div className="text-xs text-slate-400 space-y-1.5">
+                      <p>
+                        Draw boxes on the document to mark areas for
+                        anonymization.
+                      </p>
+                      <p>
+                        <span className="text-red-400 font-medium">
+                          Red border
+                        </span>{" "}
+                        = redacted (blacked out)
+                      </p>
+                      <p>
+                        <span className="text-green-400 font-medium">
+                          Green border
+                        </span>{" "}
+                        = replaced with your text
+                      </p>
+                      <div className="border-t border-slate-600/50 pt-1.5 mt-1.5">
+                        <p className="text-slate-500 font-medium mb-1">
+                          Keyboard shortcuts
+                        </p>
+                        <p>
+                          <kbd className="bg-slate-700 px-1 rounded text-slate-300">
+                            Ctrl+F
+                          </kbd>{" "}
+                          Search in PDF
+                        </p>
+                        <p>
+                          <kbd className="bg-slate-700 px-1 rounded text-slate-300">
+                            Ctrl +/-
+                          </kbd>{" "}
+                          Zoom in/out
+                        </p>
+                        <p>
+                          <kbd className="bg-slate-700 px-1 rounded text-slate-300">
+                            Ctrl+0
+                          </kbd>{" "}
+                          Reset zoom
+                        </p>
+                        <p>
+                          <kbd className="bg-slate-700 px-1 rounded text-slate-300">
+                            Arrow keys
+                          </kbd>{" "}
+                          Navigate pages
+                        </p>
+                        <p>
+                          <kbd className="bg-slate-700 px-1 rounded text-slate-300">
+                            Home/End
+                          </kbd>{" "}
+                          First/last page
+                        </p>
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
 
-              <div className="flex-1">
-                {/* Boxes list for current page */}
-                {currentPageBoxes.length > 0 && (
-                  <div className="bg-gray-700 border border-gray-600 rounded-lg p-4 mb-4">
-                    <h3 className="text-white font-semibold mb-2">
-                      Boxes on Page {currentPage}:
-                    </h3>
-                    <div className="space-y-2 max-h-40 overflow-y-auto">
-                      {currentPageBoxes.map((box, idx) => (
-                        <div
-                          key={box.id}
-                          className="flex items-center justify-between bg-gray-600 p-2 rounded"
-                        >
-                          <div className="flex-1">
-                            <span className="text-white text-sm">
-                              {box.text ? (
-                                <span>
-                                  <span className="text-green-400">
-                                    Replace:
-                                  </span>{" "}
-                                  &quot;{box.text}&quot;
-                                </span>
-                              ) : (
-                                <span>
-                                  <span className="text-red-400">
-                                    Redact
-                                  </span>{" "}
-                                  #{idx + 1}
-                                </span>
-                              )}
-                            </span>
+              {/* Main content */}
+              <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
+                {/* Annotations panel */}
+                {boxes.length > 0 && (
+                  <div className="bg-slate-800 border border-slate-700 rounded-xl mb-2 flex-shrink-0">
+                    {/* Tab buttons */}
+                    <div className="flex border-b border-slate-700">
+                      <button
+                        onClick={() => setShowAllAnnotations(false)}
+                        className={`flex-1 px-4 py-2.5 text-sm font-medium transition-colors ${
+                          !showAllAnnotations
+                            ? "text-white border-b-2 border-emerald-500"
+                            : "text-slate-400 hover:text-slate-200"
+                        }`}
+                      >
+                        Annotations in Current Page ({currentPageBoxes.length})
+                      </button>
+                      <button
+                        onClick={() => setShowAllAnnotations(true)}
+                        className={`flex-1 px-4 py-2.5 text-sm font-medium transition-colors ${
+                          showAllAnnotations
+                            ? "text-white border-b-2 border-emerald-500"
+                            : "text-slate-400 hover:text-slate-200"
+                        }`}
+                      >
+                        Annotations Across All Pages ({boxes.length})
+                      </button>
+                    </div>
+
+                    <div className="p-3 max-h-48 overflow-y-auto">
+                      {!showAllAnnotations ? (
+                        /* Current page boxes */
+                        currentPageBoxes.length > 0 ? (
+                          <div className="space-y-2">
+                            {currentPageBoxes.map((box, idx) => (
+                              <div
+                                key={box.id}
+                                className="flex items-center justify-between bg-slate-700/50 p-2.5 rounded-lg border border-slate-600/50"
+                              >
+                                <div className="flex-1 min-w-0">
+                                  <span className="text-white text-sm">
+                                    {box.text ? (
+                                      <span className="flex items-center gap-2">
+                                        <span className="inline-block w-2 h-2 rounded-full bg-green-500 flex-shrink-0"></span>
+                                        <span className="truncate">
+                                          {box.text}
+                                        </span>
+                                      </span>
+                                    ) : (
+                                      <span className="flex items-center gap-2">
+                                        <span className="inline-block w-2 h-2 rounded-full bg-red-500 flex-shrink-0"></span>
+                                        Redaction #{idx + 1}
+                                      </span>
+                                    )}
+                                  </span>
+                                </div>
+                                <div className="flex gap-1.5 ml-2">
+                                  <button
+                                    onClick={() => editBox(box)}
+                                    className="p-1.5 bg-slate-600 text-slate-300 rounded-md hover:bg-slate-500 hover:text-white transition-colors"
+                                    title="Edit"
+                                  >
+                                    <Edit3 size={14} />
+                                  </button>
+                                  <button
+                                    onClick={() => deleteBox(box.id)}
+                                    className="p-1.5 bg-slate-600 text-slate-300 rounded-md hover:bg-red-600 hover:text-white transition-colors"
+                                    title="Delete"
+                                  >
+                                    <X size={14} />
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
                           </div>
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => editBox(box)}
-                              className="px-2 py-1 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm"
-                              title="Edit"
-                            >
-                              <Edit3 size={14} />
-                            </button>
-                            <button
-                              onClick={() => deleteBox(box.id)}
-                              className="px-2 py-1 bg-red-500 text-white rounded hover:bg-red-600 text-sm"
-                              title="Delete"
-                            >
-                              <X size={14} />
-                            </button>
-                          </div>
+                        ) : (
+                          <p className="text-slate-500 text-sm text-center py-3">
+                            No annotations on this page. Draw a box to get
+                            started.
+                          </p>
+                        )
+                      ) : (
+                        /* All pages boxes */
+                        <div className="space-y-3">
+                          {Object.entries(boxesByPageGrouped)
+                            .sort(
+                              ([a], [b]) => parseInt(a) - parseInt(b)
+                            )
+                            .map(([pageNum, pageBoxes]) => (
+                              <div key={pageNum}>
+                                <button
+                                  onClick={() =>
+                                    changePage(parseInt(pageNum))
+                                  }
+                                  className={`text-xs font-semibold uppercase tracking-wider mb-1.5 flex items-center gap-1.5 hover:text-emerald-400 transition-colors ${
+                                    parseInt(pageNum) === currentPage
+                                      ? "text-emerald-400"
+                                      : "text-slate-400"
+                                  }`}
+                                >
+                                  Page {pageNum}
+                                  <span className="text-slate-500 font-normal normal-case">
+                                    — {pageBoxes.length} annotation
+                                    {pageBoxes.length !== 1 ? "s" : ""}
+                                  </span>
+                                </button>
+                                <div className="space-y-1.5">
+                                  {pageBoxes.map((box, idx) => (
+                                    <div
+                                      key={box.id}
+                                      className="flex items-center justify-between bg-slate-700/50 p-2 rounded-lg border border-slate-600/50"
+                                    >
+                                      <div className="flex-1 min-w-0">
+                                        <span className="text-white text-sm">
+                                          {box.text ? (
+                                            <span className="flex items-center gap-2">
+                                              <span className="inline-block w-2 h-2 rounded-full bg-green-500 flex-shrink-0"></span>
+                                              <span className="truncate">
+                                                {box.text}
+                                              </span>
+                                            </span>
+                                          ) : (
+                                            <span className="flex items-center gap-2">
+                                              <span className="inline-block w-2 h-2 rounded-full bg-red-500 flex-shrink-0"></span>
+                                              Redaction #{idx + 1}
+                                            </span>
+                                          )}
+                                        </span>
+                                      </div>
+                                      <div className="flex gap-1.5 ml-2">
+                                        <button
+                                          onClick={() => editBox(box)}
+                                          className="p-1.5 bg-slate-600 text-slate-300 rounded-md hover:bg-slate-500 hover:text-white transition-colors"
+                                          title="Edit"
+                                        >
+                                          <Edit3 size={14} />
+                                        </button>
+                                        <button
+                                          onClick={() =>
+                                            deleteBox(box.id)
+                                          }
+                                          className="p-1.5 bg-slate-600 text-slate-300 rounded-md hover:bg-red-600 hover:text-white transition-colors"
+                                          title="Delete"
+                                        >
+                                          <X size={14} />
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
                         </div>
-                      ))}
+                      )}
                     </div>
                   </div>
                 )}
 
-                {/* PDF viewer */}
+                {/* PDF Toolbar */}
+                <div className="bg-slate-800 border border-slate-700 rounded-xl p-2 mb-2 flex items-center gap-2 flex-wrap flex-shrink-0">
+                  {/* Page navigation */}
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => changePage(1)}
+                      disabled={currentPage === 1}
+                      className="p-1.5 bg-slate-700 text-slate-300 rounded-md hover:bg-slate-600 hover:text-white disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed transition-colors"
+                      title="First page (Home)"
+                    >
+                      <ChevronsLeft size={16} />
+                    </button>
+                    <button
+                      onClick={() => changePage(currentPage - 1)}
+                      disabled={currentPage === 1}
+                      className="p-1.5 bg-slate-700 text-slate-300 rounded-md hover:bg-slate-600 hover:text-white disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed transition-colors"
+                      title="Previous page"
+                    >
+                      <ChevronLeft size={16} />
+                    </button>
+
+                    <form
+                      onSubmit={handleGoToPage}
+                      className="flex items-center gap-1"
+                    >
+                      <input
+                        type="number"
+                        min={1}
+                        max={totalPages}
+                        value={pageInput}
+                        onChange={(e) => setPageInput(e.target.value)}
+                        placeholder={String(currentPage)}
+                        className="w-12 text-center text-sm bg-slate-900 text-white border border-slate-600 rounded-md py-1 px-1 focus:ring-1 focus:ring-emerald-500 focus:border-transparent [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      />
+                      <span className="text-slate-400 text-sm">
+                        / {totalPages}
+                      </span>
+                    </form>
+
+                    <button
+                      onClick={() => changePage(currentPage + 1)}
+                      disabled={currentPage === totalPages}
+                      className="p-1.5 bg-slate-700 text-slate-300 rounded-md hover:bg-slate-600 hover:text-white disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed transition-colors"
+                      title="Next page"
+                    >
+                      <ChevronRight size={16} />
+                    </button>
+                    <button
+                      onClick={() => changePage(totalPages)}
+                      disabled={currentPage === totalPages}
+                      className="p-1.5 bg-slate-700 text-slate-300 rounded-md hover:bg-slate-600 hover:text-white disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed transition-colors"
+                      title="Last page (End)"
+                    >
+                      <ChevronsRight size={16} />
+                    </button>
+                  </div>
+
+                  <div className="w-px h-6 bg-slate-600"></div>
+
+                  {/* Zoom controls */}
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => handleZoom(-25)}
+                      disabled={zoomLevel <= 50}
+                      className="p-1.5 bg-slate-700 text-slate-300 rounded-md hover:bg-slate-600 hover:text-white disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed transition-colors"
+                      title="Zoom out (Ctrl+-)"
+                    >
+                      <ZoomOut size={16} />
+                    </button>
+                    <span className="text-sm text-slate-300 font-medium w-12 text-center">
+                      {zoomLevel}%
+                    </span>
+                    <button
+                      onClick={() => handleZoom(25)}
+                      disabled={zoomLevel >= 200}
+                      className="p-1.5 bg-slate-700 text-slate-300 rounded-md hover:bg-slate-600 hover:text-white disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed transition-colors"
+                      title="Zoom in (Ctrl++)"
+                    >
+                      <ZoomIn size={16} />
+                    </button>
+                    <button
+                      onClick={resetZoom}
+                      disabled={zoomLevel === 100}
+                      className="p-1.5 bg-slate-700 text-slate-300 rounded-md hover:bg-slate-600 hover:text-white disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed transition-colors"
+                      title="Reset zoom (Ctrl+0)"
+                    >
+                      <RotateCcw size={16} />
+                    </button>
+                  </div>
+
+                  <div className="w-px h-6 bg-slate-600"></div>
+
+                  {/* Search toggle */}
+                  <button
+                    onClick={() => setShowSearchBar((prev) => !prev)}
+                    className={`p-1.5 rounded-md transition-colors ${
+                      showSearchBar
+                        ? "bg-emerald-600 text-white"
+                        : "bg-slate-700 text-slate-300 hover:bg-slate-600 hover:text-white"
+                    }`}
+                    title="Search in PDF (Ctrl+F)"
+                  >
+                    <Search size={16} />
+                  </button>
+                </div>
+
+                {/* Search bar */}
+                {showSearchBar && (
+                  <div className="bg-slate-800 border border-slate-700 rounded-xl p-3 mb-2 flex items-center gap-2">
+                    <Search size={16} className="text-slate-400 flex-shrink-0" />
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        handleSearch();
+                      }}
+                      className="flex-1 flex items-center gap-2"
+                    >
+                      <input
+                        type="text"
+                        value={searchText}
+                        onChange={(e) => setSearchText(e.target.value)}
+                        placeholder="Search text in PDF..."
+                        className="flex-1 text-sm bg-slate-900 text-white border border-slate-600 rounded-lg py-1.5 px-3 focus:ring-1 focus:ring-emerald-500 focus:border-transparent placeholder-slate-500"
+                        autoFocus
+                      />
+                      <button
+                        type="submit"
+                        disabled={!searchText.trim() || isSearching}
+                        className="px-3 py-1.5 bg-emerald-600 text-white text-sm rounded-lg hover:bg-emerald-700 disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed transition-colors"
+                      >
+                        {isSearching ? "Searching..." : "Find"}
+                      </button>
+                    </form>
+
+                    {searchResults.length > 0 && (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs text-slate-400 whitespace-nowrap">
+                          Page {currentSearchIdx + 1} of{" "}
+                          {searchResults.length}
+                        </span>
+                        <button
+                          onClick={() => navigateSearchResult(-1)}
+                          className="p-1 bg-slate-700 text-slate-300 rounded hover:bg-slate-600 hover:text-white transition-colors"
+                          title="Previous result"
+                        >
+                          <ChevronLeft size={14} />
+                        </button>
+                        <button
+                          onClick={() => navigateSearchResult(1)}
+                          className="p-1 bg-slate-700 text-slate-300 rounded hover:bg-slate-600 hover:text-white transition-colors"
+                          title="Next result"
+                        >
+                          <ChevronRight size={14} />
+                        </button>
+                      </div>
+                    )}
+
+                    <button
+                      onClick={clearSearch}
+                      className="p-1.5 text-slate-400 hover:text-white transition-colors"
+                      title="Close search"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                )}
+
+                {/* PDF viewer — full width, fills remaining space */}
                 <div
                   ref={containerRef}
-                  className="border-2 border-gray-600 rounded-lg overflow-auto bg-gray-900 flex justify-center items-start p-4"
-                  style={{ maxHeight: "70vh" }}
+                  className="border border-slate-700 rounded-xl overflow-auto bg-slate-950 flex-1 min-h-0 p-2"
                 >
                   <div
-                    style={{ position: "relative", display: "inline-block" }}
+                    style={{
+                      position: "relative",
+                      width: `${zoomLevel}%`,
+                      maxWidth: zoomLevel <= 100 ? "100%" : "none",
+                      margin: "0 auto",
+                    }}
                   >
                     <canvas
                       ref={canvasRef}
-                      className="shadow-lg"
+                      className="rounded"
                       style={{
-                        maxWidth: "100%",
+                        width: "100%",
                         height: "auto",
                         display: "block",
                       }}
@@ -647,84 +1142,74 @@ export default function PDFAnonymizer() {
                       onMouseMove={handleMouseMove}
                       onMouseUp={handleMouseUp}
                       onMouseLeave={handleMouseUp}
-                      className="cursor-crosshair shadow-lg"
+                      className="cursor-crosshair"
                       style={{
                         position: "absolute",
                         top: 0,
                         left: 0,
-                        maxWidth: "100%",
-                        height: "auto",
+                        width: "100%",
+                        height: "100%",
                       }}
                     />
                   </div>
                 </div>
-
-                {/* Instructions */}
-                <div className="bg-gray-700 border border-gray-600 rounded-lg p-4 mt-4">
-                  <h3 className="text-white font-semibold mb-2">
-                    Instructions:
-                  </h3>
-                  <ul className="text-gray-300 text-sm space-y-1 list-disc list-inside">
-                    <li>Click and drag on the PDF to draw boxes</li>
-                    <li>
-                      For each box, choose to add replacement text or leave
-                      empty for redaction
-                    </li>
-                    <li>
-                      <span className="text-red-400">Red boxes</span> = full
-                      redaction (black)
-                    </li>
-                    <li>
-                      <span className="text-green-400">Green boxes</span> = text
-                      replacement
-                    </li>
-                    <li>Navigate pages to mark content throughout the document</li>
-                    <li>Click Download or Upload when ready</li>
-                  </ul>
-                </div>
               </div>
             </div>
-          )}
-
-          {/* Text Replacement Modal */}
-          {editingBox && (
-            <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-              <div className="bg-gray-800 p-6 rounded-lg border border-gray-600 w-96 max-w-full shadow-xl">
-                <h3 className="text-white text-lg font-semibold mb-4">
-                  {editingBox.isEditing ? "Edit Box" : "Add Box"}
-                </h3>
-                <p className="text-gray-400 text-sm mb-4">
-                  Enter replacement text, or leave empty to redact (black box)
-                </p>
-                <textarea
-                  value={replacementText}
-                  onChange={(e) => setReplacementText(e.target.value)}
-                  placeholder="Enter replacement text (optional)..."
-                  className="w-full h-32 p-3 bg-gray-700 text-white border border-gray-600 rounded mb-4 resize-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  autoFocus
-                />
-                <div className="flex gap-3 justify-end">
-                  <button
-                    onClick={() => {
-                      setEditingBox(null);
-                      setReplacementText("");
-                    }}
-                    className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={saveBox}
-                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
-                  >
-                    Save
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
+          </>
+        )}
       </div>
+
+      {/* Footer */}
+      <footer className="border-t border-slate-800 flex-shrink-0">
+        <div className="max-w-[1600px] mx-auto px-6 py-3 flex items-center justify-between">
+          <p className="text-xs text-slate-500">
+            Powered by Acurat
+          </p>
+          <p className="text-xs text-slate-600">
+            All processing happens locally in your browser. No data is sent to
+            any server.
+          </p>
+        </div>
+      </footer>
+
+      {/* Text Replacement Modal */}
+      {editingBox && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-800 p-6 rounded-xl border border-slate-600 w-96 max-w-full shadow-2xl">
+            <h3 className="text-white text-lg font-semibold mb-1">
+              {editingBox.isEditing ? "Edit Annotation" : "Add Annotation"}
+            </h3>
+            <p className="text-slate-400 text-sm mb-4">
+              Enter replacement text, or leave empty to fully redact the
+              selected area.
+            </p>
+            <textarea
+              value={replacementText}
+              onChange={(e) => setReplacementText(e.target.value)}
+              placeholder="Enter replacement text (leave empty to redact)..."
+              className="w-full h-28 p-3 bg-slate-900 text-white border border-slate-600 rounded-lg mb-4 resize-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent placeholder-slate-500"
+              autoFocus
+            />
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => {
+                  setEditingBox(null);
+                  setReplacementText("");
+                }}
+                className="px-4 py-2 bg-slate-700 text-slate-300 rounded-lg hover:bg-slate-600 hover:text-white transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveBox}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors font-medium"
+              >
+                {replacementText.trim() ? "Save Replacement" : "Save Redaction"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
